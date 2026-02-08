@@ -1,0 +1,128 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: en-US
+
+# Assertive profile — more feedback for coding agent consumption
+reviews:
+  profile: assertive
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  collapse_walkthrough: false
+  review_details: true
+  sequence_diagrams: true
+  enable_prompt_for_ai_agents: true
+  poem: false
+  in_progress_fortune: false
+
+  # Monorepo path-specific review instructions
+  path_instructions:
+    - path: "agent/**"
+      instructions: |
+        Python component using PydanticAI. Review for:
+        - Pydantic model correctness and type safety
+        - Clean tool interfaces (tools are Pydantic models)
+        - Proper async patterns
+        - Test coverage for glue layer (CLI wrappers, Nix expression generator, output parsers)
+        - Logfire observability integration
+    - path: "nix/**"
+      instructions: |
+        NixOS modules and configuration. Review for:
+        - Module composability and reusability
+        - Clean interfaces for mkContainer/mkVM consumption
+        - Avoid hardcoded values; prefer options and parameters
+        - privateNetwork=true is mandatory for all containers
+    - path: "parts/**"
+      instructions: |
+        flake-parts modules. Review for:
+        - Clean separation of concerns between modules
+        - Consistency with flake-parts conventions
+    - path: "docs/**"
+      instructions: |
+        Architecture and project documentation. Review for:
+        - Technical accuracy and consistency with implementation
+        - Alignment with decisions in docs/architecture.md
+    - path: ".github/**"
+      instructions: |
+        CI/CD configuration. Review for:
+        - Correct use of GitHub Actions best practices
+        - Nix caching efficiency (DeterminateSystems actions)
+        - Path filter accuracy for monorepo jobs
+
+  # Skip generated/lock files
+  path_filters:
+    - "!flake.lock"
+    - "!**/.direnv/**"
+    - "!**/result"
+    - "!**/result-*"
+
+  # Relevant tools for this stack
+  tools:
+    ruff:
+      enabled: true
+    shellcheck:
+      enabled: true
+    actionlint:
+      enabled: true
+    gitleaks:
+      enabled: true
+    markdownlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    # Disable tools irrelevant to this project
+    biome:
+      enabled: false
+    eslint:
+      enabled: false
+    phpstan:
+      enabled: false
+    phpmd:
+      enabled: false
+    phpcs:
+      enabled: false
+    swiftlint:
+      enabled: false
+    rubocop:
+      enabled: false
+    golangci-lint:
+      enabled: false
+    detekt:
+      enabled: false
+    pmd:
+      enabled: false
+    hadolint:
+      enabled: false
+    buf:
+      enabled: false
+    oxc:
+      enabled: false
+    sqlfluff:
+      enabled: false
+    pylint:
+      enabled: false # using ruff instead
+    flake8:
+      enabled: false # using ruff instead
+    clippy:
+      enabled: false
+    checkov:
+      enabled: false
+    tflint:
+      enabled: false
+    trivy:
+      enabled: false
+    semgrep:
+      enabled: false
+    circleci:
+      enabled: false
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  opt_out: false
+  web_search:
+    enabled: true
+  code_guidelines:
+    enabled: true
+  learnings:
+    scope: local # public repo — keep learnings repo-scoped

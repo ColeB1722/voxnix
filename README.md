@@ -42,4 +42,4 @@ just check
 
 ## License
 
-TBD
+[MIT](LICENSE)
