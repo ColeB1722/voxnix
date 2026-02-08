@@ -10,7 +10,7 @@ fmt:
 
 # Check formatting without modifying
 check:
-    treefmt --check
+    treefmt --ci
     nix flake check
 
 # Run Python tests
@@ -23,4 +23,4 @@ build:
 
 # Deploy to appliance
 deploy target:
-    nixos-rebuild switch --flake .#appliance --target-host admin@{{target}} --use-remote-sudo
+    nixos-rebuild switch --flake .#appliance --target-host admin@{{ target }} --use-remote-sudo

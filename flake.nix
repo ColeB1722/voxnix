@@ -58,7 +58,7 @@
               echo "Running pre-commit checks..."
 
               # Format check (treefmt)
-              if ! treefmt --check 2>/dev/null; then
+              if ! treefmt --fail-on-change 2>/dev/null; then
                 echo "❌ Formatting issues found. Run 'treefmt' to fix."
                 exit 1
               fi
