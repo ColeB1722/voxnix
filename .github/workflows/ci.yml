@@ -20,23 +20,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
-      - run: nix build .#formatter
       - run: nix fmt -- --check
 
   # Nix checks — triggered by Nix-related changes
   nix-check:
     name: Nix flake check
     runs-on: ubuntu-latest
-    if: >-
-      github.event_name == 'pull_request' ||
-      github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
       - run: nix flake check
 
-  # Python agent tests — triggered by agent/ changes
+  # Python agent tests — runs ruff always, pytest only if tests exist
   agent-test:
     name: Agent tests
     runs-on: ubuntu-latest
@@ -44,12 +40,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
-      - name: Run agent tests
+      - name: Run agent checks
         run: |
           nix develop --command bash -c "
-            cd agent
-            ruff check .
-            pytest . -x --tb=short
+            ruff check agent/
+
+            # Only run pytest if there are actual test files
+            if find agent/ -name 'test_*.py' -o -name '*_test.py' | grep -q .; then
+              pytest agent/ -x --tb=short
+            else
+              echo 'No test files found in agent/ — skipping pytest'
+            fi
           "
 
   # Full build — only on PRs to main
