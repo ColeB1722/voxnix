@@ -7,9 +7,14 @@
     treefmt-nix.url = "github:numtide/treefmt-nix";
   };
 
-  outputs = inputs @ { flake-parts, ... }:
+  outputs =
+    inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = [ "x86_64-linux" "aarch64-linux" ];
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "aarch64-darwin"
+      ];
 
       imports = [
         inputs.treefmt-nix.flakeModule
@@ -19,35 +24,37 @@
         # ./parts/checks.nix
       ];
 
-      perSystem = { pkgs, ... }: {
-        # Dev shell with all tools needed for development
-        devShells.default = pkgs.mkShell {
-          packages = with pkgs; [
-            # Nix tools
-            nixfmt-rfc-style
-            nil  # Nix LSP
+      perSystem =
+        { pkgs, ... }:
+        {
+          # Dev shell with all tools needed for development
+          devShells.default = pkgs.mkShell {
+            packages = with pkgs; [
+              # Nix tools
+              nixfmt
+              nil # Nix LSP
 
-            # Python
-            python312
-            uv
-            ruff
+              # Python
+              python312
+              uv
+              ruff
 
-            # General
-            just
-            jq
-          ];
+              # General
+              just
+              jq
+            ];
 
-          shellHook = ''
-            echo "voxnix dev shell"
-          '';
+            shellHook = ''
+              echo "voxnix dev shell"
+            '';
+          };
+
+          # Formatting configuration
+          treefmt = {
+            projectRootFile = "flake.nix";
+            programs.nixfmt.enable = true;
+            programs.ruff-format.enable = true;
+          };
         };
-
-        # Formatting configuration
-        treefmt = {
-          projectRootFile = "flake.nix";
-          programs.nixfmt.enable = true;
-          programs.ruff-format.enable = true;
-        };
-      };
     };
 }
