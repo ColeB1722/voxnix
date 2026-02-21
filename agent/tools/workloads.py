@@ -8,9 +8,9 @@ See architecture.md § State Management.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Literal
 
 from agent.tools.cli import run_command
 
@@ -24,9 +24,9 @@ class Workload:
     """A running or stopped container/VM managed by voxnix."""
 
     name: str
-    class_: Literal["container", "vm"]
-    service: str  # "nspawn", "libvirt", etc. — left as str; machinectl may report others
-    state: Literal["running", "stopped", "degraded", "maintenance"]
+    class_: str  # known: "container", "vm"
+    service: str  # known: "nspawn", "libvirt"
+    state: str  # known: "running", "stopped", "degraded", "maintenance", "failed"
     addresses: list[str] = field(default_factory=list)
 
     @property
@@ -116,11 +116,6 @@ async def list_workloads(*, owner: str | None = None) -> list[Workload]:
     if owner is None:
         return workloads
 
-    # Filter by ownership — query VOXNIX_OWNER inside each container
-    owned = []
-    for workload in workloads:
-        container_owner = await get_container_owner(workload.name)
-        if container_owner == owner:
-            owned.append(workload)
-
-    return owned
+    # Filter by ownership — query VOXNIX_OWNER inside each container in parallel
+    owners = await asyncio.gather(*(get_container_owner(w.name) for w in workloads))
+    return [w for w, o in zip(workloads, owners, strict=True) if o == owner]

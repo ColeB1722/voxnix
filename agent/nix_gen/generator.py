@@ -47,8 +47,15 @@ def _resolve_flake_path(flake_path: str | None) -> str:
 
 
 def _nix_string(value: str) -> str:
-    """Wrap a Python string as a Nix string literal."""
-    return f'"{value}"'
+    """Wrap a Python string as a Nix string literal.
+
+    Escapes Nix special characters within double-quoted strings:
+      \\  →  \\\\   (must be first to avoid double-escaping)
+      "   →  \\"
+      $   →  \\$    (prevents Nix string interpolation)
+    """
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
+    return f'"{escaped}"'
 
 
 def _nix_list(items: list[str]) -> str:

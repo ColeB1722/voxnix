@@ -5,10 +5,11 @@ live workload state from systemd/machinectl.
 """
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
+from agent.tools.cli import CommandResult
 from agent.tools.workloads import Workload, WorkloadError, list_workloads
 
 
@@ -69,10 +70,7 @@ class TestListWorkloads:
                 "addresses": "10.100.0.2\n",
             }
         ]
-        mock_result = AsyncMock()
-        mock_result.returncode = 0
-        mock_result.stdout = json.dumps(machines)
-        mock_result.stderr = ""
+        mock_result = CommandResult(stdout=json.dumps(machines), stderr="", returncode=0)
 
         with patch("agent.tools.workloads.run_command", return_value=mock_result):
             workloads = await list_workloads()
@@ -83,10 +81,7 @@ class TestListWorkloads:
         assert workloads[0].state == "running"
 
     async def test_returns_empty_list_when_no_machines(self):
-        mock_result = AsyncMock()
-        mock_result.returncode = 0
-        mock_result.stdout = json.dumps([])
-        mock_result.stderr = ""
+        mock_result = CommandResult(stdout=json.dumps([]), stderr="", returncode=0)
 
         with patch("agent.tools.workloads.run_command", return_value=mock_result):
             workloads = await list_workloads()
@@ -114,10 +109,7 @@ class TestListWorkloads:
                 "addresses": "10.100.0.3\n",
             },
         ]
-        mock_result = AsyncMock()
-        mock_result.returncode = 0
-        mock_result.stdout = json.dumps(machines)
-        mock_result.stderr = ""
+        mock_result = CommandResult(stdout=json.dumps(machines), stderr="", returncode=0)
 
         with patch("agent.tools.workloads.run_command", return_value=mock_result):
             workloads = await list_workloads()
@@ -139,10 +131,7 @@ class TestListWorkloads:
                 "addresses": "10.100.0.2\nfe80::1\n",
             }
         ]
-        mock_result = AsyncMock()
-        mock_result.returncode = 0
-        mock_result.stdout = json.dumps(machines)
-        mock_result.stderr = ""
+        mock_result = CommandResult(stdout=json.dumps(machines), stderr="", returncode=0)
 
         with patch("agent.tools.workloads.run_command", return_value=mock_result):
             workloads = await list_workloads()
@@ -162,10 +151,7 @@ class TestListWorkloads:
                 "version": "25.05",
             }
         ]
-        mock_result = AsyncMock()
-        mock_result.returncode = 0
-        mock_result.stdout = json.dumps(machines)
-        mock_result.stderr = ""
+        mock_result = CommandResult(stdout=json.dumps(machines), stderr="", returncode=0)
 
         with patch("agent.tools.workloads.run_command", return_value=mock_result):
             workloads = await list_workloads()
@@ -173,10 +159,11 @@ class TestListWorkloads:
         assert workloads[0].addresses == []
 
     async def test_machinectl_failure_raises(self):
-        mock_result = AsyncMock()
-        mock_result.returncode = 1
-        mock_result.stdout = ""
-        mock_result.stderr = "Failed to list machines: Permission denied"
+        mock_result = CommandResult(
+            stdout="",
+            stderr="Failed to list machines: Permission denied",
+            returncode=1,
+        )
 
         with (
             patch("agent.tools.workloads.run_command", return_value=mock_result),
@@ -185,10 +172,7 @@ class TestListWorkloads:
             await list_workloads()
 
     async def test_invalid_json_raises(self):
-        mock_result = AsyncMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "not json"
-        mock_result.stderr = ""
+        mock_result = CommandResult(stdout="not json", stderr="", returncode=0)
 
         with (
             patch("agent.tools.workloads.run_command", return_value=mock_result),
@@ -218,10 +202,7 @@ class TestListWorkloads:
                 "addresses": "10.100.0.3\n",
             },
         ]
-        mock_result = AsyncMock()
-        mock_result.returncode = 0
-        mock_result.stdout = json.dumps(machines)
-        mock_result.stderr = ""
+        mock_result = CommandResult(stdout=json.dumps(machines), stderr="", returncode=0)
 
         with (
             patch("agent.tools.workloads.run_command", return_value=mock_result),
@@ -237,10 +218,7 @@ class TestListWorkloads:
 
     async def test_calls_correct_machinectl_command(self):
         """Verifies machinectl is called with --output=json."""
-        mock_result = AsyncMock()
-        mock_result.returncode = 0
-        mock_result.stdout = json.dumps([])
-        mock_result.stderr = ""
+        mock_result = CommandResult(stdout=json.dumps([]), stderr="", returncode=0)
 
         with patch("agent.tools.workloads.run_command", return_value=mock_result) as mock_run:
             await list_workloads()

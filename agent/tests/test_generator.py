@@ -102,6 +102,41 @@ class TestGenerateContainerExpr:
         assert "/opt/voxnix/nix/mkContainer.nix" in expr
 
 
+class TestNixStringEscaping:
+    """_nix_string must escape Nix special characters to produce valid syntax."""
+
+    def test_double_quote_in_owner_escaped(self):
+        spec = make_spec(owner='chat_"123"')
+        expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
+        assert '\\"' in expr
+        assert '"chat_"123""' not in expr
+
+    def test_backslash_in_owner_escaped(self):
+        spec = make_spec(owner="chat\\123")
+        expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
+        assert "\\\\" in expr
+
+    def test_dollar_sign_in_owner_escaped(self):
+        """$ must be escaped to prevent Nix string interpolation."""
+        spec = make_spec(owner="chat_$USER")
+        expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
+        assert "\\$" in expr
+        assert '"chat_$USER"' not in expr
+
+    def test_dollar_sign_in_name_escaped(self):
+        # ContainerSpec validation rejects names with $, so test via owner
+        spec = make_spec(owner="$INJECTED")
+        expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
+        assert "\\$" in expr
+
+    def test_clean_values_unaffected(self):
+        """Normal alphanumeric values should not be modified."""
+        spec = make_spec(name="dev-abc", owner="123456789", modules=["git", "fish"])
+        expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
+        assert '"dev-abc"' in expr
+        assert '"123456789"' in expr
+
+
 class TestFlakePathResolution:
     """Flake path can be passed explicitly or read from VOXNIX_FLAKE_PATH via settings."""
 

@@ -60,6 +60,27 @@ class VoxnixDeps:
     owner: str
 
 
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+
+async def _check_ownership(name: str, owner: str) -> str | None:
+    """Verify the requesting user owns the named container.
+
+    Returns an error string if the check fails (caller should return it directly),
+    or None if the caller is the owner and the operation should proceed.
+
+    Args:
+        name: Container name to check.
+        owner: The requesting user's chat_id.
+    """
+    container_owner = await get_container_owner(name)
+    if container_owner == owner:
+        return None
+    if container_owner is None:
+        return f"❌ Container `{name}` not found or not running."
+    return f"❌ Container `{name}` belongs to another user."
+
+
 # ── Agent definition ───────────────────────────────────────────────────────────
 
 # model=None — the model is resolved at run time by passing get_settings().llm_model_string
@@ -156,12 +177,8 @@ async def tool_destroy_container(
     Returns:
         A plain-language summary of the result for the user.
     """
-    # Ownership check — do not destroy containers belonging to other users.
-    container_owner = await get_container_owner(name)
-    if container_owner != ctx.deps.owner:
-        if container_owner is None:
-            return f"❌ Container `{name}` not found or not running."
-        return f"❌ Container `{name}` belongs to another user."
+    if denied := await _check_ownership(name, ctx.deps.owner):
+        return denied
 
     result: ContainerResult = await destroy_container(name)
 
@@ -184,6 +201,9 @@ async def tool_start_container(
     Returns:
         A plain-language summary of the result for the user.
     """
+    if denied := await _check_ownership(name, ctx.deps.owner):
+        return denied
+
     result: ContainerResult = await start_container(name)
 
     if result.success:
@@ -205,6 +225,9 @@ async def tool_stop_container(
     Returns:
         A plain-language summary of the result for the user.
     """
+    if denied := await _check_ownership(name, ctx.deps.owner):
+        return denied
+
     result: ContainerResult = await stop_container(name)
 
     if result.success:

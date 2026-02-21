@@ -37,6 +37,7 @@ Environment variables (all injected by agenix at runtime):
 from __future__ import annotations
 
 import os
+import warnings
 from functools import lru_cache
 
 from pydantic import SecretStr, field_validator, model_validator
@@ -113,8 +114,11 @@ class VoxnixSettings(BaseSettings):
     def validate_provider(cls, v: str) -> str:
         known = set(_PROVIDER_API_KEY_ENV.keys())
         if v not in known:
-            msg = f"Unknown LLM_PROVIDER '{v}'. Supported providers: {', '.join(sorted(known))}"
-            raise ValueError(msg)
+            warnings.warn(
+                f"Unknown LLM_PROVIDER '{v}'. API key validation will be skipped. "
+                f"Known providers: {', '.join(sorted(known))}",
+                stacklevel=2,
+            )
         return v
 
     @model_validator(mode="after")
