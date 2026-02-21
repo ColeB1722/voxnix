@@ -4,7 +4,7 @@
 # from the host (tank/users/<owner>/workspace → /workspace).
 # The host's mkContainer wiring handles the actual bind mount;
 # this module just ensures the mount point and directory structure exist.
-{ lib, config, ... }:
+{ ... }:
 {
   # Create the workspace mount point and common subdirectories
   systemd.tmpfiles.rules = [

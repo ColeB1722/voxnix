@@ -48,6 +48,10 @@ let
       throw "voxnix: mkContainer spec missing required fields: ${builtins.concatStringsSep ", " missing}"
     else if !builtins.isList spec.modules then
       throw "voxnix: mkContainer spec.modules must be a list"
+    else if !builtins.isString spec.name || spec.name == "" then
+      throw "voxnix: mkContainer spec.name must be a non-empty string"
+    else if !builtins.isString spec.owner || spec.owner == "" then
+      throw "voxnix: mkContainer spec.owner must be a non-empty string"
     else
       spec;
 
