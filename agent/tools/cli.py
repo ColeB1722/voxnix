@@ -77,7 +77,7 @@ async def run_command(
         raise TimeoutError(msg) from None
 
     return CommandResult(
-        stdout=stdout_bytes.decode() if stdout_bytes else "",
-        stderr=stderr_bytes.decode() if stderr_bytes else "",
+        stdout=stdout_bytes.decode(errors="replace") if stdout_bytes else "",
+        stderr=stderr_bytes.decode(errors="replace") if stderr_bytes else "",
         returncode=proc.returncode or 0,
     )

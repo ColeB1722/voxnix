@@ -76,6 +76,12 @@ async def discover_modules(*, use_cache: bool = True) -> list[str]:
     if not isinstance(parsed, list):
         raise ModuleDiscoveryError(f"Expected a list of module names, got {type(parsed).__name__}")
 
+    if not all(isinstance(m, str) for m in parsed):
+        bad = [type(m).__name__ for m in parsed if not isinstance(m, str)]
+        raise ModuleDiscoveryError(
+            f"Expected all module names to be strings, got: {', '.join(bad)}"
+        )
+
     modules = sorted(parsed)
 
     if use_cache:

@@ -109,6 +109,19 @@ class TestDiscoverModules:
         ):
             await discover_modules(use_cache=False)
 
+    async def test_non_string_elements_raises(self):
+        """nix eval should return a list of strings, not mixed types."""
+        mock_result = AsyncMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(["git", 123, True])
+        mock_result.stderr = ""
+
+        with (
+            patch("agent.nix_gen.discovery.run_nix_eval", return_value=mock_result),
+            pytest.raises(ModuleDiscoveryError, match="strings"),
+        ):
+            await discover_modules(use_cache=False)
+
     async def test_empty_list_is_valid(self):
         """An empty module list is technically valid (no modules available)."""
         mock_result = AsyncMock()

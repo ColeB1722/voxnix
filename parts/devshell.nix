@@ -48,6 +48,10 @@
               echo "❌ Ruff found issues in agent/."
               exit 1
             fi
+            if ! uv sync --all-extras --quiet; then
+              echo "❌ uv sync failed — run 'uv sync --all-extras' to fix."
+              exit 1
+            fi
             if ! uv run ty check agent/; then
               echo "❌ ty found type errors in agent/."
               exit 1
