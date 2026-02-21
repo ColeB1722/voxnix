@@ -42,10 +42,18 @@
             exit 1
           fi
 
-          # Lint Python if agent/ files are staged
+          # Lint and type-check Python if agent/ files are staged
           if git diff --cached --name-only | grep -q '^agent/'; then
             if ! ruff check agent/; then
               echo "❌ Ruff found issues in agent/."
+              exit 1
+            fi
+            if ! uv sync --all-extras --quiet; then
+              echo "❌ uv sync failed — run 'uv sync --all-extras' to fix."
+              exit 1
+            fi
+            if ! uv run ty check agent/; then
+              echo "❌ ty found type errors in agent/."
               exit 1
             fi
           fi

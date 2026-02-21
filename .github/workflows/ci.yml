@@ -43,11 +43,14 @@ jobs:
       - name: Run agent checks
         run: |
           nix develop --command bash -c "
+            uv sync --all-extras
+
             ruff check agent/
+            uv run ty check agent/
 
             # Only run pytest if there are actual test files
             if find agent/ -name 'test_*.py' -o -name '*_test.py' | grep -q .; then
-              pytest agent/ -x --tb=short
+              uv run pytest agent/ -x --tb=short
             else
               echo 'No test files found in agent/ — skipping pytest'
             fi
