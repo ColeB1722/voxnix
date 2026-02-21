@@ -49,6 +49,9 @@ def _parse_addresses(raw: str) -> list[str]:
 
 def _parse_machine(entry: dict) -> Workload:
     """Parse a single machinectl JSON entry into a Workload."""
+    if "machine" not in entry:
+        raise WorkloadError(f"Missing 'machine' key in machinectl entry: {entry}")
+
     raw_addresses = entry.get("addresses", "")
     addresses = _parse_addresses(raw_addresses) if raw_addresses else []
 
@@ -66,6 +69,10 @@ async def get_container_owner(name: str) -> str | None:
 
     Used by list_workloads(owner=...) to filter by ownership.
     Returns None if the container is not running or the env var is not set.
+
+    # TODO(logfire): Add a span here when wiring up Logfire instrumentation
+    # holistically across the agent. Useful for tracing per-container queries
+    # and debugging owner filtering performance.
     """
     result = await run_command(
         "nixos-container",
@@ -98,6 +105,8 @@ async def list_workloads(*, owner: str | None = None) -> list[Workload]:
     Raises:
         WorkloadError: If machinectl fails or returns unparseable output.
     """
+    # TODO(logfire): Wrap this function in a Logfire span when wiring up
+    # observability holistically. Capture owner, result count, and duration.
     result = await run_command("machinectl", "list", "--output=json", "--no-pager")
 
     if not result.success:
@@ -116,6 +125,8 @@ async def list_workloads(*, owner: str | None = None) -> list[Workload]:
     if owner is None:
         return workloads
 
-    # Filter by ownership — query VOXNIX_OWNER inside each container in parallel
-    owners = await asyncio.gather(*(get_container_owner(w.name) for w in workloads))
-    return [w for w, o in zip(workloads, owners, strict=True) if o == owner]
+    # Filter by ownership — query VOXNIX_OWNER inside each container in parallel.
+    # Only query containers — nixos-container run does not work on VMs.
+    containers = [w for w in workloads if w.is_container]
+    owners = await asyncio.gather(*(get_container_owner(w.name) for w in containers))
+    return [w for w, o in zip(containers, owners, strict=True) if o == owner]
