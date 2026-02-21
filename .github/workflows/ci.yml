@@ -54,13 +54,14 @@ jobs:
           "
 
   # Full build — only on PRs to main
-  build:
-    name: Full appliance build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    needs: [format, nix-check, agent-test]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-      - run: nix build .#appliance
+  # TODO: Re-enable when parts/host.nix defines nixosConfigurations.appliance
+  # build:
+  #   name: Full appliance build
+  #   runs-on: ubuntu-latest
+  #   if: github.event_name == 'pull_request'
+  #   needs: [format, nix-check, agent-test]
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: DeterminateSystems/nix-installer-action@main
+  #     - uses: DeterminateSystems/magic-nix-cache-action@main
+  #     - run: nix build .#appliance
