@@ -185,9 +185,11 @@ class TestFormatResponse:
         chunks = format_response(text)
         for chunk in chunks:
             assert len(chunk) <= TELEGRAM_MAX_MESSAGE_LEN
-        assert "".join(c + ("\n" if not c.endswith("\n") else "") for c in chunks).replace(
-            "\n\n", "\n"
-        )  # basic sanity — no crash
+        # Must have actually split (not returned as a single chunk)
+        assert len(chunks) > 1
+        # format_response strips the newline it splits on, so rejoining with "\n"
+        # reconstructs the original text exactly when all splits land on newlines.
+        assert "\n".join(chunks) == text
 
 
 # ── handle_message ────────────────────────────────────────────────────────────
