@@ -15,7 +15,22 @@ check:
 
 # Run Python tests
 test:
-    pytest agent/
+    uv run pytest agent/
+
+# Run the Telegram bot
+bot:
+    uv run python -m agent.chat
+
+# Lint Python code
+lint:
+    uv run ruff check agent/
+
+# Type-check Python code
+typecheck:
+    uv run ty check agent/
+
+# Lint + typecheck + test
+ci: lint typecheck test
 
 # Build the full appliance
 build:
