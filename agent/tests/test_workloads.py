@@ -223,9 +223,12 @@ class TestListWorkloads:
         mock_result.stdout = json.dumps(machines)
         mock_result.stderr = ""
 
-        with patch("agent.tools.workloads.run_command", return_value=mock_result), patch(
-            "agent.tools.workloads.get_container_owner",
-            side_effect=lambda name: "chat_123" if name == "dev-abc" else "chat_456",
+        with (
+            patch("agent.tools.workloads.run_command", return_value=mock_result),
+            patch(
+                "agent.tools.workloads.get_container_owner",
+                side_effect=lambda name: "chat_123" if name == "dev-abc" else "chat_456",
+            ),
         ):
             workloads = await list_workloads(owner="chat_123")
 

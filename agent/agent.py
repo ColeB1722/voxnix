@@ -5,6 +5,10 @@ the single entry point for the chat layer (Telegram) to interact with
 the infrastructure.
 
 Architecture decisions reflected here:
+- Agent is instantiated at module level with model=None and defer_model_check=True.
+  This means importing agent.py never triggers get_settings() — the model string
+  is resolved lazily on the first .run() call via the `model` argument. Safe in CI
+  and tests without any env vars set.
 - Owner (Telegram chat_id) flows in via VoxnixDeps — never a tool argument.
   The chat layer sets it; the agent cannot be tricked into crossing ownership.
 - System prompt is dynamic — available modules are injected at interaction time
@@ -58,10 +62,21 @@ class VoxnixDeps:
 
 # ── Agent definition ───────────────────────────────────────────────────────────
 
+# model=None — the model is resolved at run time by passing get_settings().llm_model_string
+# to agent.run(). This keeps module-level instantiation free of any env var access.
+#
+# defer_model_check=True — PydanticAI's built-in mechanism to defer model validation
+# (environment variable checks, provider availability) until the first .run() call.
+# Together with model=None this means importing this module in CI or tests never
+# requires LLM_PROVIDER, LLM_MODEL, or any provider API key to be set.
 agent: Agent[VoxnixDeps, str] = Agent(
-    get_settings().llm_model_string,
+    model=None,
     deps_type=VoxnixDeps,
+    defer_model_check=True,
 )
+
+
+# ── System prompt ──────────────────────────────────────────────────────────────
 
 
 @agent.system_prompt
@@ -222,3 +237,27 @@ async def tool_list_workloads(ctx: RunContext[VoxnixDeps]) -> str:
         lines.append(f"• `{w.name}` ({kind}) — {status} — {addr}")
 
     return "\n".join(lines)
+
+
+# ── Run helper ─────────────────────────────────────────────────────────────────
+
+
+async def run(message: str, owner: str) -> str:
+    """Run the agent for a single user message.
+
+    Resolves the model from settings at call time — env vars are only required
+    when actually running the agent, not at import time.
+
+    Args:
+        message: The user's natural language message.
+        owner: The Telegram chat_id of the requesting user.
+
+    Returns:
+        The agent's response as a string.
+    """
+    result = await agent.run(
+        message,
+        model=get_settings().llm_model_string,
+        deps=VoxnixDeps(owner=owner),
+    )
+    return result.output
