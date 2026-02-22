@@ -54,6 +54,13 @@ in
     description = "Voxnix orchestrator agent (Telegram bot)";
     documentation = [ "https://github.com/ColeB1722/voxnix" ];
 
+    # Give up after 5 consecutive failures within 5 minutes.
+    # Prevents infinite restart loops on persistent config errors
+    # (bad token, wrong API key, etc.).
+    # These are [Unit] directives, not [Service] — must be outside serviceConfig.
+    startLimitBurst = 5;
+    startLimitIntervalSec = 300;
+
     # Start after networking is fully online (agent needs outbound HTTPS for
     # Telegram API and LLM providers) and after agenix has decrypted secrets.
     after = [
@@ -132,7 +139,7 @@ in
       ExecStartPre = "${uv}/bin/uv sync --frozen --no-dev --no-editable";
 
       # Run the Telegram bot entry point.
-      ExecStart = "${uv}/bin/uv run --frozen --no-dev python -m agent.chat";
+      ExecStart = "${uv}/bin/uv run --frozen --no-dev --no-editable python -m agent.chat";
 
       # ── Restart policy ───────────────────────────────────────────────────
 
@@ -140,12 +147,6 @@ in
       # clean exit (e.g. SIGTERM from systemd during shutdown).
       Restart = "on-failure";
       RestartSec = "10s";
-
-      # Give up after 5 consecutive failures within 5 minutes.
-      # Prevents infinite restart loops on persistent config errors
-      # (bad token, wrong API key, etc.).
-      StartLimitBurst = 5;
-      StartLimitIntervalSec = 300;
 
       # ── Timeouts ─────────────────────────────────────────────────────────
 
@@ -185,7 +186,6 @@ in
         "/var/lib/voxnix-agent" # own state (venv, cache)
         "/tank" # ZFS user datasets
         "/run" # systemd runtime, agenix secrets
-        "/tmp" # temp files for Nix expressions
         "/nix/var" # nix-daemon state (extra-container needs this)
       ];
 
