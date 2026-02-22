@@ -67,6 +67,25 @@ Run CodeRabbit once per PR, when the PR is ready to merge — not mid-branch aft
 coderabbit review --type committed --base main --plain
 ```
 
+### Branch discipline — keep fixes on the branch until stable
+
+The most common way to lose CodeRabbit coverage is the deployment debug loop: make a small fix, open a PR, merge immediately, repeat. After a few cycles, every fix is already on main and there's nothing left to review.
+
+The rule: **do not merge between fixes during a debug or deployment session.** Accumulate all fixes on the same branch, validate by deploying from the branch tip (not from main — `just deploy` works from any branch), then run CodeRabbit once when the session is stable and the PR is ready.
+
+```
+# Deploy from a branch — no need to merge first
+git checkout fix/deployment-session
+just deploy <ip>          # deploys whatever the local flake evaluates to
+# ... fix more things, commit, deploy again ...
+~/.local/bin/coderabbit review --type committed --base main --plain
+# triage, then merge
+```
+
+For **feature development**, the existing workflow is correct — one branch, implement, iterate, CodeRabbit when ready.
+
+For **deployment debugging**, keep fixes batched on a single branch (`fix/deployment-session` or similar) until the system is stable and working.
+
 ### Triage protocol
 
 Every finding gets one of three dispositions — never silently ignore:
