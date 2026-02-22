@@ -24,9 +24,9 @@
 {
   # ── Identity ───────────────────────────────────────────────────────────────
 
-  # agenix uses the host's SSH ed25519 key to decrypt secrets at boot.
-  # This key is generated automatically by OpenSSH on first boot and
-  # persists across rebuilds (stored in /etc/ssh/ on the ZFS var dataset).
+  # agenix uses the appliance's SSH ed25519 key to decrypt secrets at boot.
+  # This key is generated automatically by OpenSSH on the NixOS VM's first
+  # boot and persists across rebuilds (stored in /etc/ssh/ on the ZFS var dataset).
   age.identityPaths = [
     "/etc/ssh/ssh_host_ed25519_key"
   ];

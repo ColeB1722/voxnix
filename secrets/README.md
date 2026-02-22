@@ -1,6 +1,9 @@
 # Secrets
 
-This directory contains [agenix](https://github.com/ryantm/agenix) encrypted secrets for the voxnix appliance.
+This directory contains [agenix](https://github.com/ryantm/agenix) encrypted secrets for the voxnix appliance. Two keys are involved:
+
+- **admin** — your personal age key (on your MacBook / deployment machine). Lets you encrypt and edit secrets.
+- **appliance** — the NixOS VM's SSH public key (the Hyper-V VM, not your MacBook). Lets the appliance decrypt its own secrets at boot.
 
 ## Files
 
@@ -53,15 +56,15 @@ git add agent-env.age
 git commit -m "secrets: add encrypted agent environment"
 ```
 
-### 5. After first provision — add the host key
+### 5. After first provision — add the appliance key
 
-Once the appliance is provisioned, retrieve its SSH host key:
+Once the appliance is provisioned, retrieve the NixOS VM's SSH public key (this is the appliance's key, not your MacBook's):
 
 ```bash
 ssh-keyscan -t ed25519 <vm-ip> 2>/dev/null
 ```
 
-Paste the full `ssh-ed25519 AAAA...` line as the `host` value in `secrets.nix`, then re-encrypt all secrets so the appliance can decrypt them at boot:
+Paste the full `ssh-ed25519 AAAA...` line as the `appliance` value in `secrets.nix`, then re-encrypt all secrets so the VM can decrypt them at boot:
 
 ```bash
 agenix --rekey

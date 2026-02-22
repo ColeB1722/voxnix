@@ -161,11 +161,11 @@ The VM will reboot into the fully configured appliance when complete. The tempor
 
 **After provisioning — add the host key and rekey secrets:**
 
-The appliance now has an SSH host key. Add it to `secrets/secrets.nix` so the appliance can decrypt secrets at boot:
+The NixOS VM now has its own SSH key. Add it to `secrets/secrets.nix` so the appliance can decrypt its own secrets at boot:
 
 ```bash
 ssh-keyscan -t ed25519 <vm-ip> 2>/dev/null
-# Paste the full ssh-ed25519 line as the `host` value in secrets/secrets.nix
+# Paste the full ssh-ed25519 line as the `appliance` value in secrets/secrets.nix
 
 cd secrets && agenix --rekey
 git add -A && git commit -m "secrets: rekey with host key"

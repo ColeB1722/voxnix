@@ -1,15 +1,16 @@
 # agenix secret declarations — maps encrypted .age files to authorized keys.
 #
 # Each entry declares which age/SSH public keys can decrypt the secret.
-# The admin key is your personal age key (from age-keygen).
-# The host key is the appliance's SSH host key (added after first provision).
+# Two keys are needed:
+#   - admin: your personal age key (on your MacBook) — lets you encrypt/edit secrets
+#   - appliance: the NixOS VM's SSH host key — lets the appliance decrypt secrets at boot
 #
 # Setup:
 #   1. Generate an age key:  age-keygen -o ~/.config/age/voxnix.txt
 #   2. Paste your public key below (replacing the placeholder)
 #   3. Encrypt secrets:  cd secrets && agenix -e agent-env.age
-#   4. After first provision, add the host's SSH public key:
-#        ssh-keyscan <vm-ip> 2>/dev/null | grep ed25519
+#   4. After first provision, add the appliance's SSH public key:
+#        ssh-keyscan -t ed25519 <vm-ip> 2>/dev/null
 #      Paste it below, re-key all secrets:  agenix --rekey
 #
 # See README.md § Step 5 for the full walkthrough.
@@ -19,19 +20,21 @@ let
   #
   # Replace these placeholders with real keys before encrypting secrets.
 
-  # Admin's age public key (from ~/.config/age/voxnix.txt)
+  # Your personal age public key (on your MacBook / deployment machine).
+  # This lets you encrypt and edit secrets from your laptop.
   # Generate with: age-keygen -o ~/.config/age/voxnix.txt
   admin = "age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 
-  # Appliance SSH host key (added after first provision)
-  # Retrieve with: ssh-keyscan <vm-ip> 2>/dev/null | grep ed25519
-  # Leave as empty string until the host is provisioned, then rekey.
-  host = "";
+  # The NixOS appliance's SSH public key (the Hyper-V VM, not your MacBook).
+  # This lets the appliance decrypt its own secrets at boot.
+  # Retrieve after first provision: ssh-keyscan -t ed25519 <vm-ip> 2>/dev/null
+  # Leave as empty string until the appliance is provisioned, then rekey.
+  appliance = "";
 
   # All keys that should be able to decrypt secrets.
   # Before first provision: just the admin key.
-  # After first provision: admin + host (so the appliance can decrypt at boot).
-  allKeys = [ admin ] ++ (if host != "" then [ host ] else [ ]);
+  # After first provision: admin + appliance (so the VM can decrypt at boot).
+  allKeys = [ admin ] ++ (if appliance != "" then [ appliance ] else [ ]);
 
 in
 {
