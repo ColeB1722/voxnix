@@ -57,10 +57,5 @@ provision target:
         exit 1
     fi
     echo ""
-    echo "Checking SSH connectivity to root@{{ target }}..."
-    if ! ssh -q -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no root@{{ target }} exit 2>/dev/null; then
-        echo "❌ Cannot reach root@{{ target }} — is the NixOS installer running? Did you set a root password?"
-        exit 1
-    fi
-    echo "✅ SSH OK — starting provisioning..."
+    echo "Starting provisioning — nixos-anywhere will prompt for the root password..."
     nixos-anywhere --flake .#appliance root@{{ target }}
