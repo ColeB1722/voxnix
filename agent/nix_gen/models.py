@@ -19,7 +19,8 @@ from pydantic import BaseModel, field_validator
 # Must be valid for systemd-nspawn machine names.
 _CONTAINER_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 
-# Maximum container name length when privateNetwork=true.
+# Maximum container name length. All voxnix containers use privateNetwork=true
+# (hardcoded in nix/mkContainer.nix — it is an architectural invariant, not an option).
 # The network interface name is derived from the container name (ve-<name>),
 # and Linux interface names are limited to 15 characters total.
 # "ve-" prefix = 3 chars, leaving 12 for the name — but NixOS enforces 11.
