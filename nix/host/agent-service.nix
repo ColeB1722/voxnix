@@ -113,6 +113,11 @@ in
       UV_PROJECT_ENVIRONMENT = venvDir;
       UV_CACHE_DIR = uvCacheDir;
 
+      # Redirect Nix's cache away from /root/.cache/nix which is read-only
+      # under ProtectSystem=strict. Without this, `nix eval` fails with
+      # "creating directory '/root/.cache/nix': Read-only file system".
+      XDG_CACHE_HOME = "/var/lib/voxnix-agent/cache";
+
       # Prevent Python from writing .pyc files into the read-only store path.
       PYTHONDONTWRITEBYTECODE = "1";
 
