@@ -203,19 +203,19 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         context: PTB handler context (unused, present for handler signature).
     """
     welcome = (
-        "👋 *Welcome to Voxnix!*\n\n"
+        "👋 Welcome to Voxnix!\n\n"
         "I'm your personal NixOS infrastructure orchestrator. "
         "Talk to me in plain language to manage containers on your appliance.\n\n"
         "Try:\n"
-        "• _Spin up a dev container with git and fish_\n"
-        "• _List my containers_\n"
-        "• _Stop container dev\\-abc_\n"
-        "• _Destroy container dev\\-abc_\n\n"
+        "• Spin up a dev container with git and fish\n"
+        "• List my containers\n"
+        "• Stop container dev-abc\n"
+        "• Destroy container dev-abc\n\n"
         "Type /help for more information."
     )
     if update.effective_message is None:
         raise ValueError("handle_start called on an update with no effective_message")
-    await update.effective_message.reply_text(welcome, parse_mode="MarkdownV2")
+    await update.effective_message.reply_text(welcome)
 
 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -228,14 +228,14 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         context: PTB handler context (unused, present for handler signature).
     """
     help_text = (
-        "🛠 *Voxnix Help*\n\n"
-        "*Container management:*\n"
-        "• Create: _spin up a container with git and fish_\n"
-        "• List: _show my containers_ or _list workloads_\n"
-        "• Stop: _stop container \\<name\\>_\n"
-        "• Start: _start container \\<name\\>_\n"
-        "• Destroy: _destroy container \\<name\\>_\n\n"
-        "*Commands:*\n"
+        "🛠 Voxnix Help\n\n"
+        "Container management:\n"
+        "• Create: spin up a container with git and fish\n"
+        "• List: show my containers or list workloads\n"
+        "• Stop: stop container <name>\n"
+        "• Start: start container <name>\n"
+        "• Destroy: destroy container <name>\n\n"
+        "Commands:\n"
         "/start — welcome message\n"
         "/help — this message\n\n"
         "Just describe what you want in plain language — "
@@ -243,4 +243,4 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
     if update.effective_message is None:
         raise ValueError("handle_help called on an update with no effective_message")
-    await update.effective_message.reply_text(help_text, parse_mode="MarkdownV2")
+    await update.effective_message.reply_text(help_text)
