@@ -72,6 +72,13 @@
 
   # ── Container runtime ──────────────────────────────────────────────────────
 
+  # Enable the NixOS container infrastructure — this installs the
+  # container@.service systemd template unit that extra-container and
+  # nixos-container use to start/stop containers. Without this, container
+  # builds succeed but `extra-container create --start` fails with
+  # "Unit container@<name>.service not found".
+  boot.enableContainers = true;
+
   # extra-container allows creating declarative NixOS containers without a
   # full system rebuild. The agent pipes generated Nix expressions to it.
   # See docs/architecture.md § extra-container — key discovery.
