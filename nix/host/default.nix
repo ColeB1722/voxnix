@@ -79,6 +79,15 @@
   # "Unit container@<name>.service not found".
   boot.enableContainers = true;
 
+  # Required by extra-container for dynamic container installation.
+  # extra-container installs per-container systemd units into a mutable
+  # directory rather than rebuilding the host system. Without this path,
+  # `extra-container create` fails with:
+  # "Container service installation failed. Please add
+  #  boot.extraSystemdUnitPaths = [ "/etc/systemd-mutable/system" ]"
+  # See: https://github.com/erikarvstedt/extra-container/#install
+  boot.extraSystemdUnitPaths = [ "/etc/systemd-mutable/system" ];
+
   # extra-container allows creating declarative NixOS containers without a
   # full system rebuild. The agent pipes generated Nix expressions to it.
   # See docs/architecture.md § extra-container — key discovery.
