@@ -44,6 +44,14 @@ deploy target:
     @echo "✅ SSH OK — starting rebuild..."
     nixos-rebuild switch --flake .#appliance --target-host admin@{{ target }} --use-remote-sudo
 
+# Edit the encrypted secrets file
+secrets-edit:
+    cd secrets && agenix -e agent-env.age --identity ~/.config/age/voxnix.txt
+
+# Rekey secrets after adding the appliance SSH key to secrets/secrets.nix
+secrets-rekey:
+    cd secrets && agenix --rekey --identity ~/.config/age/voxnix.txt
+
 # Provision a new appliance (one-time, destructive — formats the target disk)
 provision target:
     #!/usr/bin/env bash
