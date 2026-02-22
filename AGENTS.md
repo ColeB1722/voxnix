@@ -58,3 +58,55 @@ voxnix/
 - TDD for glue layer (CLI wrappers, Nix expression generator, output parsers)
 - PydanticAI for agent framework — tools are Pydantic models
 - Logfire for all observability
+
+## Code Review Workflow (CodeRabbit)
+
+Run CodeRabbit once per PR, when the PR is ready to merge — not mid-branch after every commit.
+
+```
+coderabbit review --type committed --base main --plain
+```
+
+### Triage protocol
+
+Every finding gets one of three dispositions — never silently ignore:
+
+| Disposition | Criteria | Action |
+|---|---|---|
+| **Fix now** | Bug in this PR's own code; correctness risk; trivial to fix | Fix, commit, push |
+| **Track** | Pre-existing code; out of scope for this PR; nitpick with real merit | Open a GitHub issue (see format below) |
+| **Skip** | Not actually needed (e.g. `@pytest.mark.asyncio` with `asyncio_mode = "auto"`); verified harmless | Note justification in the PR comment |
+
+After triage, post a single PR comment summarising all three columns with issue links for anything tracked.
+
+### Issue format for tracked findings
+
+Each tracked finding becomes a GitHub issue with this structure:
+
+```
+## Source
+CodeRabbit review of PR #N (branch-name).
+
+## Finding
+<finding verbatim or paraphrased>
+
+## Affected files
+- path/to/file.py — line range / function name
+
+## Suggested fix
+<concrete fix or code snippet>
+```
+
+Use existing labels where they fit (`bug`, `enhancement`, `documentation`). Don't create custom labels.
+
+## Issue Backlog
+
+Open issues represent tracked tech debt and deferred findings. Before starting work on any component, run:
+
+```
+gh issue list
+```
+
+Check for open issues touching the files or subsystem you are about to modify. If an issue is directly addressed by planned work, fix it in the same PR and close it. If it is adjacent but not the focus, note it in the PR description.
+
+Do not re-open or re-create issues that already exist. Do not let findings accumulate in PR comments without a corresponding issue.
