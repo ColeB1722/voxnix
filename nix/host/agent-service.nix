@@ -208,6 +208,8 @@ in
         "/tank" # ZFS user datasets
         "/run" # systemd runtime, agenix secrets
         "/nix/var" # nix-daemon state (extra-container needs this)
+        "/tmp" # uv sync + Python tempfile (extra-container also needs this)
+        "/var/tmp" # fallback temp dir used by some Nix build tools
       ];
 
       # PrivateTmp is intentionally NOT set here. extra-container needs access
