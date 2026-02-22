@@ -268,15 +268,18 @@ async def list_workloads(*, owner: str | None = None) -> list[Workload]:
 
         # ── Ownership filtering ────────────────────────────────────────────
         # Running containers: query in parallel (nixos-container run, fast).
-        # Stopped containers: read from system path (sync file read, cheap).
+        # Stopped containers: read from system path via asyncio.to_thread so
+        # the blocking Path.read_text() calls don't block the event loop.
+        # VMs: ownership query not supported — excluded from filtered results.
         running_workloads = [w for w in workloads if w.is_running and w.is_container]
         stopped_workloads = [w for w in workloads if not w.is_running and w.is_container]
-        vm_workloads = [w for w in workloads if w.is_vm]
 
         running_owners = await asyncio.gather(
             *(get_container_owner(w.name) for w in running_workloads)
         )
-        stopped_owners = [_read_owner_from_system_path(w.name) for w in stopped_workloads]
+        stopped_owners = await asyncio.gather(
+            *(asyncio.to_thread(_read_owner_from_system_path, w.name) for w in stopped_workloads)
+        )
 
         filtered: list[Workload] = []
         for w, o in zip(running_workloads, running_owners, strict=True):
@@ -285,8 +288,6 @@ async def list_workloads(*, owner: str | None = None) -> list[Workload]:
         for w, o in zip(stopped_workloads, stopped_owners, strict=True):
             if o == owner:
                 filtered.append(w)
-        # VMs: ownership query not supported — excluded from filtered results.
-        _ = vm_workloads
 
         logfire.info(
             "Listed {count} workloads for owner {owner} (from {total} total)",
