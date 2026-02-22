@@ -3,6 +3,10 @@
 The agent never trusts cached workload state. Live status always comes
 from systemd/machinectl, which is the ground truth.
 
+Observability: list_workloads and get_container_owner are wrapped in
+logfire.span() so ownership queries and machinectl calls appear as
+discrete spans in traces, nested under the parent agent run.
+
 See architecture.md § State Management.
 """
 
@@ -11,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
+
+import logfire
 
 from agent.tools.cli import run_command
 
@@ -69,27 +75,35 @@ async def get_container_owner(name: str) -> str | None:
 
     Used by list_workloads(owner=...) to filter by ownership.
     Returns None if the container is not running or the env var is not set.
-
-    # TODO(logfire): Add a span here when wiring up Logfire instrumentation
-    # holistically across the agent. Useful for tracing per-container queries
-    # and debugging owner filtering performance.
     """
-    try:
-        result = await run_command(
-            "nixos-container",
-            "run",
-            name,
-            "--",
-            "sh",
-            "-c",
-            "echo $VOXNIX_OWNER",
-            timeout_seconds=10,
-        )
-    except TimeoutError:
-        return None
-    if not result.success or not result.stdout:
-        return None
-    return result.stdout.strip() or None
+    with logfire.span("workload.get_owner", container_name=name):
+        try:
+            result = await run_command(
+                "nixos-container",
+                "run",
+                name,
+                "--",
+                "sh",
+                "-c",
+                "echo $VOXNIX_OWNER",
+                timeout_seconds=10,
+            )
+        except TimeoutError:
+            logfire.warn(
+                "Owner query timed out for '{container_name}'",
+                container_name=name,
+            )
+            return None
+        if not result.success or not result.stdout:
+            return None
+        owner = result.stdout.strip() or None
+        if owner:
+            logfire.info(
+                "Container '{container_name}' owned by {owner}",
+                container_name=name,
+                owner=owner,
+            )
+        return owner
 
 
 async def list_workloads(*, owner: str | None = None) -> list[Workload]:
@@ -109,35 +123,42 @@ async def list_workloads(*, owner: str | None = None) -> list[Workload]:
     Raises:
         WorkloadError: If machinectl fails or returns unparseable output.
     """
-    # TODO(logfire): Wrap this function in a Logfire span when wiring up
-    # observability holistically. Capture owner, result count, and duration.
-    try:
-        result = await run_command(
-            "machinectl", "list", "--output=json", "--no-pager", timeout_seconds=15
+    with logfire.span("workload.list", filter_owner=owner):
+        try:
+            result = await run_command(
+                "machinectl", "list", "--output=json", "--no-pager", timeout_seconds=15
+            )
+        except TimeoutError:
+            raise WorkloadError(
+                "machinectl timed out after 15s — is systemd-machined responsive?"
+            ) from None
+
+        if not result.success:
+            raise WorkloadError(f"machinectl failed (exit {result.returncode}): {result.stderr}")
+
+        try:
+            raw = json.loads(result.stdout)
+        except (json.JSONDecodeError, ValueError) as e:
+            raise WorkloadError(f"Failed to parse machinectl output: {e}") from e
+
+        if not isinstance(raw, list):
+            raise WorkloadError(f"Expected a list from machinectl, got {type(raw).__name__}")
+
+        workloads = [_parse_machine(entry) for entry in raw]
+
+        if owner is None:
+            logfire.info("Listed {count} workloads (unfiltered)", count=len(workloads))
+            return workloads
+
+        # Filter by ownership — query VOXNIX_OWNER inside each container in parallel.
+        # Only query containers — nixos-container run does not work on VMs.
+        containers = [w for w in workloads if w.is_container]
+        owners = await asyncio.gather(*(get_container_owner(w.name) for w in containers))
+        filtered = [w for w, o in zip(containers, owners, strict=True) if o == owner]
+        logfire.info(
+            "Listed {count} workloads for owner {owner} (from {total} total)",
+            count=len(filtered),
+            owner=owner,
+            total=len(workloads),
         )
-    except TimeoutError:
-        raise WorkloadError(
-            "machinectl timed out after 15s — is systemd-machined responsive?"
-        ) from None
-
-    if not result.success:
-        raise WorkloadError(f"machinectl failed (exit {result.returncode}): {result.stderr}")
-
-    try:
-        raw = json.loads(result.stdout)
-    except (json.JSONDecodeError, ValueError) as e:
-        raise WorkloadError(f"Failed to parse machinectl output: {e}") from e
-
-    if not isinstance(raw, list):
-        raise WorkloadError(f"Expected a list from machinectl, got {type(raw).__name__}")
-
-    workloads = [_parse_machine(entry) for entry in raw]
-
-    if owner is None:
-        return workloads
-
-    # Filter by ownership — query VOXNIX_OWNER inside each container in parallel.
-    # Only query containers — nixos-container run does not work on VMs.
-    containers = [w for w in workloads if w.is_container]
-    owners = await asyncio.gather(*(get_container_owner(w.name) for w in containers))
-    return [w for w, o in zip(containers, owners, strict=True) if o == owner]
+        return filtered
