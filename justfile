@@ -42,7 +42,7 @@ deploy target:
     @ssh -q -o ConnectTimeout=5 -o BatchMode=yes admin@{{ target }} exit 2>/dev/null || \
         (echo "❌ Cannot reach admin@{{ target }} — is the appliance running?"; exit 1)
     @echo "✅ SSH OK — starting rebuild..."
-    nix run nixpkgs#nixos-rebuild -- switch --flake .#appliance --target-host admin@{{ target }} --use-remote-sudo
+    nix run nixpkgs#nixos-rebuild -- switch --flake .#appliance --target-host admin@{{ target }} --build-host admin@{{ target }} --sudo
 
 # Edit the encrypted secrets file
 secrets-edit:
