@@ -101,6 +101,7 @@ in
       pkgs.coreutils
       pkgs.bash
       pkgs.nixos-container
+      pkgs.sudo
     ];
 
     environment = {
