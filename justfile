@@ -49,7 +49,7 @@ provision target:
     @echo "⚠️  This will FORMAT THE DISK on {{ target }}. All existing data will be destroyed."
     @echo "   Target: root@{{ target }}"
     @echo ""
-    @bash -c 'read -p "Type the target IP to confirm: " confirm && [ "$$confirm" = "{{ target }}" ] || (echo "Aborted."; exit 1)'
+    @printf "Type the target IP to confirm: " && read confirm && [ "$$confirm" = "{{ target }}" ] || (echo "Aborted."; exit 1)
     @echo ""
     @echo "Checking SSH connectivity to root@{{ target }}..."
     @ssh -q -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no root@{{ target }} exit 2>/dev/null || \
