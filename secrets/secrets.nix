@@ -23,7 +23,7 @@ let
   # Your personal age public key (on your MacBook / deployment machine).
   # This lets you encrypt and edit secrets from your laptop.
   # Generate with: age-keygen -o ~/.config/age/voxnix.txt
-  admin = "age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+  admin = "age13k6t6ww23ryatnnda755lk0ksrpc6vv3sd79ry7mh9q8vmgcl40q85ya5u";
 
   # The NixOS appliance's SSH public key (the Hyper-V VM, not your MacBook).
   # This lets the appliance decrypt its own secrets at boot.
