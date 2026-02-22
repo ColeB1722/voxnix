@@ -159,7 +159,9 @@ The `provision` recipe includes a destructive-action confirmation prompt — you
 
 The VM will reboot into the fully configured appliance when complete. The temporary root password is gone — SSH access is now key-based only via the `admin` user.
 
-**After provisioning — add the host key and rekey secrets:**
+**After provisioning — add the appliance key and rekey secrets:**
+
+> **The agent will not start yet.** The secrets were encrypted for your admin key only — the appliance can't decrypt them until you add its key and rekey.
 
 The NixOS VM now has its own SSH key. Add it to `secrets/secrets.nix` so the appliance can decrypt its own secrets at boot:
 
