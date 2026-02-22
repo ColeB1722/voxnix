@@ -210,8 +210,10 @@ in
         "/nix/var" # nix-daemon state (extra-container needs this)
       ];
 
-      # Private /tmp — the agent writes temporary .nix expression files here.
-      PrivateTmp = true;
+      # PrivateTmp is intentionally NOT set here. extra-container needs access
+      # to the shared /tmp and /run for systemd unit installation. A private
+      # /tmp namespace would isolate the temp .nix files from the systemd
+      # machinery that extra-container uses to install container units.
     };
   };
 }
