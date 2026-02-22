@@ -29,7 +29,7 @@ let
   # This lets the appliance decrypt its own secrets at boot.
   # Retrieve after first provision: ssh-keyscan -t ed25519 <vm-ip> 2>/dev/null
   # Leave as empty string until the appliance is provisioned, then rekey.
-  appliance = "";
+  appliance = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG6Si8Z/mpGKgtPAIJzxrv1qhYrcdZWEY/wwDelRiSr0";
 
   # All keys that should be able to decrypt secrets.
   # Before first provision: just the admin key.
