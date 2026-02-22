@@ -45,6 +45,7 @@
               "__pycache__"
               "result"
               ".github"
+              "secrets"
             ]);
         };
 

@@ -58,7 +58,7 @@ git commit -m "secrets: add encrypted agent environment"
 Once the appliance is provisioned, retrieve its SSH host key:
 
 ```bash
-ssh-keyscan <vm-ip> 2>/dev/null | grep ed25519
+ssh-keyscan -t ed25519 <vm-ip> 2>/dev/null
 ```
 
 Paste the full `ssh-ed25519 AAAA...` line as the `host` value in `secrets.nix`, then re-encrypt all secrets so the appliance can decrypt them at boot:
