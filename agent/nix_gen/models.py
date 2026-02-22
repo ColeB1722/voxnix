@@ -19,6 +19,13 @@ from pydantic import BaseModel, field_validator
 # Must be valid for systemd-nspawn machine names.
 _CONTAINER_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 
+# Maximum container name length when privateNetwork=true.
+# The network interface name is derived from the container name (ve-<name>),
+# and Linux interface names are limited to 15 characters total.
+# "ve-" prefix = 3 chars, leaving 12 for the name — but NixOS enforces 11.
+# See: https://github.com/NixOS/nixpkgs/issues/38509
+_CONTAINER_NAME_MAX_LEN = 11
+
 
 class ContainerSpec(BaseModel):
     """Spec for creating a NixOS container via mkContainer.
@@ -42,6 +49,14 @@ class ContainerSpec(BaseModel):
                 f"Container name '{v}' is invalid. "
                 "Must be lowercase alphanumeric with hyphens, "
                 "no leading/trailing hyphens (e.g. 'my-dev-container')"
+            )
+            raise ValueError(msg)
+        if len(v) > _CONTAINER_NAME_MAX_LEN:
+            msg = (
+                f"Container name '{v}' is too long ({len(v)} chars). "
+                f"Must be {_CONTAINER_NAME_MAX_LEN} characters or fewer — "
+                "the network interface name is derived from the container name "
+                "and Linux enforces a 15-character interface name limit."
             )
             raise ValueError(msg)
         return v

@@ -118,6 +118,12 @@ in
       # "creating directory '/root/.cache/nix': Read-only file system".
       XDG_CACHE_HOME = "/var/lib/voxnix-agent/cache";
 
+      # Suppress the "Nix search path entry does not exist" warning from
+      # extra-container and nix eval. We use flakes exclusively — the legacy
+      # channel-based NIX_PATH is not needed. Setting it to empty silences
+      # the warning without affecting flake evaluation.
+      NIX_PATH = "";
+
       # Prevent Python from writing .pyc files into the read-only store path.
       PYTHONDONTWRITEBYTECODE = "1";
 

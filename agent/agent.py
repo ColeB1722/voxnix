@@ -128,6 +128,7 @@ Available workload modules: {modules_str}
 Guidelines:
 - Be concise. Users get brief status updates, not walls of text.
 - Containers are ephemeral by design — only ZFS-backed workspaces persist across restarts.
+- Container names must be 11 characters or fewer (network interface name limit). Choose short names.
 - Always confirm before destroying containers or data. Ask once, then act.
 - If a tool call fails, diagnose the error, attempt a fix, and retry once before escalating.
 - Never expose raw error output to the user — translate it into plain language.
