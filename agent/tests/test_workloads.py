@@ -5,7 +5,7 @@ live workload state from systemd/machinectl.
 """
 
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -208,7 +208,7 @@ class TestListWorkloads:
             patch("agent.tools.workloads.run_command", return_value=mock_result),
             patch(
                 "agent.tools.workloads.get_container_owner",
-                side_effect=lambda name: "chat_123" if name == "dev-abc" else "chat_456",
+                AsyncMock(side_effect=lambda name: "chat_123" if name == "dev-abc" else "chat_456"),
             ),
         ):
             workloads = await list_workloads(owner="chat_123")
