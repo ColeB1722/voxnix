@@ -99,24 +99,9 @@ Leave the installer shell running.
 
 ---
 
-#### Step 4 — Provision with nixos-anywhere (from your MacBook)
+#### Step 4 — Configure secrets with agenix (before provisioning)
 
-Clone the repo and run `nixos-anywhere` from your deployment machine. This formats the disk via `disko`, installs NixOS, and applies the full appliance configuration in one shot.
-
-```bash
-git clone https://github.com/ColeB1722/voxnix.git
-cd voxnix
-
-nixos-anywhere --flake .#appliance root@<vm-ip>
-```
-
-The VM will reboot into the fully configured appliance when complete. The temporary root password is gone — SSH access is now key-based only.
-
----
-
-#### Step 5 — Configure secrets with agenix
-
-All runtime credentials are managed by [agenix](https://github.com/ryantm/agenix) and injected into the agent's systemd service as environment variables. Nothing is hardcoded.
+All runtime credentials are managed by [agenix](https://github.com/ryantm/agenix) and injected into the agent's systemd service as a single environment file. Nothing is hardcoded.
 
 **Generate your admin age key (once only, on your MacBook):**
 
@@ -125,20 +110,65 @@ age-keygen -o ~/.config/age/voxnix.txt
 # prints: Public key: age1...
 ```
 
-Add the public key to `secrets/secrets.nix` in the repo, then encrypt each secret:
+**Add your public key** to `secrets/secrets.nix` — replace the `admin` placeholder with the public key printed above.
+
+**Add your SSH public key** to `nix/host/default.nix` — replace the `AAAA_REPLACE_WITH_YOUR_PUBLIC_KEY` placeholder in `users.users.admin.openssh.authorizedKeys.keys`.
+
+**Create the encrypted environment file:**
 
 ```bash
-# From the repo root
-agenix -e secrets/telegram-bot-token.age   # paste your bot token
-agenix -e secrets/llm-provider.age         # e.g. anthropic
-agenix -e secrets/llm-model.age            # e.g. claude-3-5-sonnet-latest
-agenix -e secrets/anthropic-api-key.age    # your provider API key
-agenix -e secrets/logfire-token.age        # optional
+cd secrets
+agenix -e agent-env.age
 ```
 
-Commit the encrypted `.age` files (safe to commit — only your age key can decrypt them). Deploy the updated config:
+Your editor will open. Paste the following (with your real values):
+
+```
+TELEGRAM_BOT_TOKEN=1234567:ABCdefGHIjklMNOpqrSTUvwxYZ
+LLM_PROVIDER=anthropic
+LLM_MODEL=claude-sonnet-4-20250514
+ANTHROPIC_API_KEY=sk-ant-api03-...
+LOGFIRE_TOKEN=your-logfire-token
+```
+
+> **Notes:** The API key variable must match the provider (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.). `LOGFIRE_TOKEN` is optional — omit the line entirely to disable remote tracing.
+
+Commit the encrypted `.age` file (safe to commit — only your age key can decrypt it):
 
 ```bash
+git add secrets/agent-env.age
+git commit -m "secrets: add encrypted agent environment"
+```
+
+See `secrets/README.md` for full details on secret management and rotation.
+
+---
+
+#### Step 5 — Provision with nixos-anywhere (from your MacBook)
+
+Clone the repo (if you haven't already) and provision the appliance. This formats the disk via `disko`, installs NixOS, and applies the full appliance configuration in one shot.
+
+```bash
+git clone https://github.com/ColeB1722/voxnix.git
+cd voxnix
+
+just provision <vm-ip>
+```
+
+The `provision` recipe includes a destructive-action confirmation prompt — you must type the target IP to confirm. It also runs an SSH pre-flight check to verify the installer is reachable.
+
+The VM will reboot into the fully configured appliance when complete. The temporary root password is gone — SSH access is now key-based only via the `admin` user.
+
+**After provisioning — add the host key and rekey secrets:**
+
+The appliance now has an SSH host key. Add it to `secrets/secrets.nix` so the appliance can decrypt secrets at boot:
+
+```bash
+ssh-keyscan <vm-ip> 2>/dev/null | grep ed25519
+# Paste the full ssh-ed25519 line as the `host` value in secrets/secrets.nix
+
+cd secrets && agenix --rekey
+git add -A && git commit -m "secrets: rekey with host key"
 just deploy <vm-ip>
 ```
 
@@ -158,6 +188,8 @@ journalctl -u voxnix-agent -f
 
 Send `/start` to your Telegram bot. You should receive the welcome message.
 
+> **Tip:** If the agent service is not running, check `journalctl -u voxnix-agent -e` — the most common cause is a missing or malformed `agent-env.age` (see step 4).
+
 ---
 
 ### Day-to-day operations
@@ -168,7 +200,8 @@ Any change to the repo — new NixOS module, agent code update, host config twea
 
 ```bash
 just deploy <vm-ip>
-# expands to: nixos-rebuild switch --flake .#appliance --target-host admin@<vm-ip> --use-remote-sudo
+# runs SSH pre-flight check, then:
+# nixos-rebuild switch --flake .#appliance --target-host admin@<vm-ip> --use-remote-sudo
 ```
 
 The rebuild is atomic. If something breaks, roll back with:

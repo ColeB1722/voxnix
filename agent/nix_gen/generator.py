@@ -22,6 +22,7 @@ The flake path (where mkContainer.nix lives) is resolved from:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.config import get_settings
@@ -84,7 +85,7 @@ def generate_container_expr(
         A Nix expression string that evaluates to a container configuration.
     """
     resolved_path = _resolve_flake_path(flake_path)
-    mk_container_path = f"{resolved_path}/nix/mkContainer.nix"
+    mk_container_path = str(Path(resolved_path) / "nix" / "mkContainer.nix")
 
     modules_nix = _nix_list(spec.modules)
 
