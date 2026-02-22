@@ -14,6 +14,7 @@ for quick diagnosis without digging through journalctl.
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +24,8 @@ import logfire
 
 from agent.nix_gen.generator import generate_container_expr
 from agent.tools.cli import run_command
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from agent.nix_gen.models import ContainerSpec
@@ -111,6 +114,13 @@ async def create_container(
             stderr=result.stderr,
             stdout=result.stdout,
             returncode=result.returncode,
+        )
+        logger.error(
+            "create_container failed: name=%s returncode=%d stderr=%r stdout=%r",
+            spec.name,
+            result.returncode,
+            result.stderr,
+            result.stdout,
         )
         return ContainerResult(
             success=False,

@@ -114,9 +114,12 @@ in
       UV_PROJECT_ENVIRONMENT = venvDir;
       UV_CACHE_DIR = uvCacheDir;
 
-      # Redirect Nix's cache away from /root/.cache/nix which is read-only
-      # under ProtectSystem=strict. Without this, `nix eval` fails with
-      # "creating directory '/root/.cache/nix': Read-only file system".
+      # Nix derives its cache path from $HOME/.cache/nix, not XDG_CACHE_HOME.
+      # /root is read-only under ProtectSystem=strict, so we redirect HOME to
+      # the service's writable StateDirectory. This fixes both:
+      #   - `nix eval` for module discovery
+      #   - extra-container's internal nix invocations during container builds
+      HOME = "/var/lib/voxnix-agent";
       XDG_CACHE_HOME = "/var/lib/voxnix-agent/cache";
 
       # extra-container uses NIX_PATH to resolve <nixpkgs/nixos> when building
