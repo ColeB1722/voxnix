@@ -50,6 +50,21 @@ let
   uvCacheDir = "/var/lib/voxnix-agent/uv-cache";
 in
 {
+  # Pre-create directories listed in ReadWritePaths that may not exist on a
+  # fresh system. ProtectSystem=strict requires all ReadWritePaths to exist
+  # at service start time, or systemd can't set up the mount namespace.
+  #
+  # /var/lib/nixos-containers — created by nixos-container on first use, but
+  # the agent service starts before any container has ever been created.
+  # /tank — parent directory for ZFS user datasets; exists after ZFS import
+  # but creating it here is a safe no-op if it already exists.
+  systemd.tmpfiles.rules = [
+    "d /var/lib/nixos-containers 0755 root root -"
+    "d /tank 0755 root root -"
+    "d /tank/users 0755 root root -"
+    "d /tank/images 0755 root root -"
+  ];
+
   systemd.services.voxnix-agent = {
     description = "Voxnix orchestrator agent (Telegram bot)";
     documentation = [ "https://github.com/ColeB1722/voxnix" ];
@@ -181,6 +196,7 @@ in
       ProtectSystem = "strict";
 
       # Directories the service needs write access to (beyond StateDirectory).
+      # All paths must exist at service start — see systemd.tmpfiles.rules above.
       ReadWritePaths = [
         "/var/lib/nixos-containers" # nixos-container create/destroy
         "/var/lib/voxnix-agent" # own state (venv, cache)
