@@ -127,7 +127,11 @@ coderabbit review --type committed --base main --plain
 
 The most common way to lose CodeRabbit coverage is the deployment debug loop: make a small fix, open a PR, merge immediately, repeat. After a few cycles, every fix is already on main and there's nothing left to review.
 
-The rule: **do not merge between fixes during a debug or deployment session.** Accumulate all fixes on the same branch, validate by deploying from the branch tip (not from main — `just deploy` works from any branch), then run CodeRabbit once when the session is stable and the PR is ready.
+Two rules:
+
+1. **Do not merge between fixes during a debug or deployment session.** Accumulate all fixes on the same branch, validate by deploying from the branch tip (not from main — `just deploy` works from any branch), then run CodeRabbit once when the session is stable and the PR is ready.
+
+2. **Do not open the PR until debugging is complete and the system is verified working.** Every push to an open PR triggers CI. During a debug session, that means CI runs on every intermediate fix — most of which will be superseded by the next commit. Open the PR only when the branch is stable. Use a local branch with no remote PR until then, or keep it as a draft.
 
 ```
 # Deploy from a branch — no need to merge first
