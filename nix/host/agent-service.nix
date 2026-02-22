@@ -115,12 +115,16 @@ in
       UV_PROJECT_ENVIRONMENT = venvDir;
       UV_CACHE_DIR = uvCacheDir;
 
-      # Nix derives its cache path from $HOME/.cache/nix, not XDG_CACHE_HOME.
-      # /root is read-only under ProtectSystem=strict, so we redirect HOME to
-      # the service's writable StateDirectory. This fixes both:
-      #   - `nix eval` for module discovery
-      #   - extra-container's internal nix invocations during container builds
+      # Nix derives its cache path from $HOME/.cache/nix — it ignores
+      # XDG_CACHE_HOME entirely. The service runs as root whose $HOME is
+      # /root, which is read-only under ProtectSystem=strict. Redirecting
+      # HOME to the writable StateDirectory fixes nix eval (module discovery)
+      # and extra-container's internal nix invocations during container builds.
       HOME = "/var/lib/voxnix-agent";
+
+      # XDG_CACHE_HOME is set as belt-and-suspenders for tools that respect
+      # the XDG spec (e.g. some Python tooling). It does NOT fix the Nix
+      # cache — that is solved by HOME above.
       XDG_CACHE_HOME = "/var/lib/voxnix-agent/cache";
 
       # extra-container uses NIX_PATH to resolve <nixpkgs/nixos> when building
