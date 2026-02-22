@@ -211,6 +211,7 @@ in
       # Directories the service needs write access to (beyond StateDirectory).
       # All paths must exist at service start — see systemd.tmpfiles.rules above.
       ReadWritePaths = [
+        "/etc/systemd-mutable" # extra-container installs dynamic units here
         "/var/lib/nixos-containers" # nixos-container create/destroy
         "/var/lib/voxnix-agent" # own state (venv, cache)
         "/tank" # ZFS user datasets
