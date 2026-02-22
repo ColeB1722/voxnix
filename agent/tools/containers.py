@@ -133,10 +133,17 @@ async def create_container(
 async def destroy_container(name: str) -> ContainerResult:
     """Destroy a NixOS container and its filesystem.
 
-    Wraps `nixos-container destroy <name>`. This is a destructive
+    Wraps `extra-container destroy <name>`. This is a destructive
     operation — the container's ephemeral state is lost. Persistent
     data on ZFS bind mounts is unaffected (ZFS dataset lifecycle is
     managed separately via create_zfs_dataset / destroy_zfs_dataset).
+
+    Note: `nixos-container destroy` is intentionally NOT used here.
+    After a `nixos-rebuild switch`, NixOS activation adopts any conf
+    file present in /etc/nixos-containers/ into the system profile,
+    causing `nixos-container destroy` to refuse with "cannot destroy
+    declarative container". `extra-container destroy` handles cleanup
+    correctly for containers created with `extra-container create`.
 
     Args:
         name: Container name (must match the running container's machine name).
@@ -145,7 +152,7 @@ async def destroy_container(name: str) -> ContainerResult:
         ContainerResult indicating success or failure.
     """
     with logfire.span("container.destroy", container_name=name):
-        result = await run_command("nixos-container", "destroy", name)
+        result = await run_command("extra-container", "destroy", name)
 
         if result.success:
             logfire.info("Container '{container_name}' destroyed", container_name=name)

@@ -152,14 +152,14 @@ class TestDestroyContainer:
         assert result.success is True
         assert result.name == "test-dev"
 
-    async def test_calls_nixos_container_destroy(self):
+    async def test_calls_extra_container_destroy(self):
         mock_run = AsyncMock(return_value=ok())
 
         with patch("agent.tools.containers.run_command", mock_run):
             await destroy_container("test-dev")
 
         args = mock_run.call_args[0]
-        assert "nixos-container" in args
+        assert "extra-container" in args
         assert "destroy" in args
         assert "test-dev" in args
 
