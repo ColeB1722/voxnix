@@ -1,7 +1,7 @@
 # Dev shell — provides all tools needed for voxnix development.
 #
 # Enter with: nix develop
-{ ... }:
+{ inputs, ... }:
 {
   perSystem =
     { config, pkgs, ... }:
@@ -21,6 +21,10 @@
           just
           jq
           config.treefmt.build.wrapper
+
+          # Deployment
+          pkgs.nixos-anywhere # initial provisioning: just provision <ip>
+          inputs.agenix.packages.${pkgs.system}.default # secret management: agenix -e, agenix --rekey
         ];
 
         shellHook = ''
