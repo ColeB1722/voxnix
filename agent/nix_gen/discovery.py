@@ -37,8 +37,21 @@ async def run_nix_eval() -> CommandResult:
     """Run `nix eval .#lib.availableModules --json`.
 
     Separated from discover_modules for testability — tests mock this function.
+
+    Flags:
+        --no-update-lock-file: prevents nix from trying to update flake.lock,
+            which would fail in the read-only /nix/store working directory.
+        timeout_seconds=120: the first eval after a cold boot needs to fetch
+            flake inputs from the network; 60s is too tight.
     """
-    return await run_command("nix", "eval", ".#lib.availableModules", "--json")
+    return await run_command(
+        "nix",
+        "eval",
+        ".#lib.availableModules",
+        "--json",
+        "--no-update-lock-file",
+        timeout_seconds=120,
+    )
 
 
 async def discover_modules(*, use_cache: bool = True) -> list[str]:
