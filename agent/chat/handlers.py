@@ -17,6 +17,7 @@ See docs/architecture.md § Chat Integration Layer and § Trust Model.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -26,7 +27,7 @@ from agent.agent import run as agent_run  # re-exported for easy mocking in test
 
 if TYPE_CHECKING:
     from telegram import Update
-    from telegram.ext import ContextTypes
+    from telegram.ext import Application, ContextTypes
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,32 @@ def owner_from_update(update: Update) -> str:
     """
     assert update.effective_chat is not None  # guaranteed in message/command handlers
     return str(update.effective_chat.id)
+
+
+# ── Per-chat locking ──────────────────────────────────────────────────────────
+
+
+def _get_chat_lock(application: Application, chat_id: int) -> asyncio.Lock:
+    """Return the asyncio.Lock for the given chat_id, creating it if needed.
+
+    Locks are stored in application.bot_data["chat_locks"] — a dict that lives
+    for the lifetime of the Application and is shared across all handler
+    invocations. This is PTB's canonical mechanism for shared per-bot state.
+
+    Because PTB's event loop is single-threaded asyncio, the dict read/write
+    between await points is safe with no additional synchronisation needed.
+
+    Args:
+        application: The running PTB Application instance.
+        chat_id: The Telegram chat ID to look up.
+
+    Returns:
+        The asyncio.Lock for this chat_id (same object on every call).
+    """
+    locks: dict[int, asyncio.Lock] = application.bot_data.setdefault("chat_locks", {})
+    if chat_id not in locks:
+        locks[chat_id] = asyncio.Lock()
+    return locks[chat_id]
 
 
 # ── Response formatting ───────────────────────────────────────────────────────
@@ -134,23 +161,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     owner = owner_from_update(update)
     chat_id = update.effective_chat.id
 
-    # 2. Send typing indicator before any blocking work.
-    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    # 2. Acquire the per-chat lock — serialises concurrent messages from the
+    #    same user so they never race against each other or spawn parallel
+    #    agent runs. Different chat_ids get independent locks and run freely.
+    lock = _get_chat_lock(context.application, chat_id)
+    async with lock:
+        # 3. Send typing indicator once we hold the lock — this way it only
+        #    fires when the agent is actually about to process, not while the
+        #    message is sitting in the queue waiting for a previous run.
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # 3. Run the agent — catch all exceptions to keep the bot alive.
-    try:
-        response = await agent_run(text.strip(), owner=owner)
-    except Exception:
-        logger.exception("Agent run failed for owner=%s", owner)
-        await update.effective_message.reply_text(  # asserted non-None above
-            "⚠️ Something went wrong processing your request. Please try again."
-        )
-        return
+        # 4. Run the agent — catch all exceptions to keep the bot alive and
+        #    to ensure the lock is always released (async with guarantees this).
+        try:
+            response = await agent_run(text.strip(), owner=owner)
+        except Exception:
+            logger.exception("Agent run failed for owner=%s", owner)
+            await update.effective_message.reply_text(  # asserted non-None above
+                "⚠️ Something went wrong processing your request. Please try again."
+            )
+            return
 
-    # 4. Send the response, splitting at the Telegram message limit if needed.
-    chunks = format_response(response)
-    for chunk in chunks:
-        await update.effective_message.reply_text(chunk)
+        # 5. Send the response, splitting at the Telegram message limit if needed.
+        chunks = format_response(response)
+        for chunk in chunks:
+            await update.effective_message.reply_text(chunk)
 
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

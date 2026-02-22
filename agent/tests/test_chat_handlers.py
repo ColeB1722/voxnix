@@ -4,6 +4,8 @@ TDD — these tests define the contract for the chat layer glue code:
   - owner_from_update: extracts the Telegram chat_id as the owner identity
   - format_response: splits long agent responses for the Telegram 4096-char limit
   - handle_message: end-to-end handler — receive message → agent.run → reply
+  - _get_chat_lock: per-chat asyncio.Lock retrieval from application.bot_data
+  - per-chat serialization: concurrent messages for the same chat are queued
 
 All Telegram API objects are mocked — no bot token or network required.
 
@@ -12,6 +14,7 @@ See docs/architecture.md § Chat Integration Layer and § Trust Model.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # ── Helpers to build minimal mock Telegram objects ────────────────────────────
@@ -42,12 +45,22 @@ def _make_update(text: str = "hello", chat_id: int = 111) -> MagicMock:
     return update
 
 
-def _make_context() -> MagicMock:
-    """Return a minimal mock of telegram.ext.ContextTypes.DEFAULT_TYPE."""
+def _make_context(bot_data: dict | None = None) -> MagicMock:
+    """Return a minimal mock of telegram.ext.ContextTypes.DEFAULT_TYPE.
+
+    Args:
+        bot_data: Shared bot_data dict to attach to context.application.
+                  Pass the same dict to multiple contexts to simulate a shared
+                  Application instance (required for per-chat lock tests).
+                  Defaults to a fresh empty dict.
+    """
     context = MagicMock()
     context.bot = MagicMock()
     context.bot.send_chat_action = AsyncMock()
     context.bot.send_message = AsyncMock()
+    # application.bot_data is where per-chat locks are stored.
+    context.application = MagicMock()
+    context.application.bot_data = bot_data if bot_data is not None else {}
     return context
 
 
@@ -397,3 +410,179 @@ class TestBuildApplication:
         command_handlers = [h for h in app.handlers.get(0, []) if isinstance(h, CommandHandler)]
         start_handlers = [h for h in command_handlers if "start" in h.commands]
         assert len(start_handlers) == 1
+
+
+# ── per-chat locking ──────────────────────────────────────────────────────────
+
+
+class TestGetChatLock:
+    """_get_chat_lock retrieves (or creates) a per-chat asyncio.Lock from bot_data."""
+
+    def test_returns_asyncio_lock(self):
+        from agent.chat.handlers import _get_chat_lock
+
+        app = MagicMock()
+        app.bot_data = {}
+        lock = _get_chat_lock(app, 123)
+        assert isinstance(lock, asyncio.Lock)
+
+    def test_same_chat_id_returns_same_lock(self):
+        """Two calls for the same chat_id must return the exact same Lock object
+        so they actually serialise against each other."""
+        from agent.chat.handlers import _get_chat_lock
+
+        app = MagicMock()
+        app.bot_data = {}
+        lock_a = _get_chat_lock(app, 42)
+        lock_b = _get_chat_lock(app, 42)
+        assert lock_a is lock_b
+
+    def test_different_chat_ids_return_different_locks(self):
+        """Different chats must get independent locks so they never block each other."""
+        from agent.chat.handlers import _get_chat_lock
+
+        app = MagicMock()
+        app.bot_data = {}
+        lock_a = _get_chat_lock(app, 1)
+        lock_b = _get_chat_lock(app, 2)
+        assert lock_a is not lock_b
+
+    def test_lock_stored_in_bot_data(self):
+        """Locks must live in bot_data so they survive across handler invocations."""
+        from agent.chat.handlers import _get_chat_lock
+
+        app = MagicMock()
+        app.bot_data = {}
+        _get_chat_lock(app, 99)
+        assert "chat_locks" in app.bot_data
+        assert 99 in app.bot_data["chat_locks"]
+
+    def test_existing_bot_data_keys_are_preserved(self):
+        """Creating a lock must not clobber unrelated bot_data entries."""
+        from agent.chat.handlers import _get_chat_lock
+
+        app = MagicMock()
+        app.bot_data = {"other_key": "other_value"}
+        _get_chat_lock(app, 7)
+        assert app.bot_data["other_key"] == "other_value"
+
+
+class TestPerChatLocking:
+    """Concurrent messages for the same chat are serialised; different chats run freely."""
+
+    async def test_concurrent_same_chat_messages_are_serialized(self):
+        """If two messages arrive for the same chat_id while the agent is running
+        the first, the second must wait until the first completes — no interleaving."""
+        from agent.chat.handlers import handle_message
+
+        call_order: list[str] = []
+        shared_bot_data: dict = {}
+
+        async def slow_agent(text: str, *, owner: str) -> str:
+            call_order.append("start")
+            await asyncio.sleep(0.02)  # simulate a slow LLM / Nix build
+            call_order.append("end")
+            return "done"
+
+        update = _make_update(text="do something", chat_id=100)
+        ctx_a = _make_context(bot_data=shared_bot_data)
+        ctx_b = _make_context(bot_data=shared_bot_data)
+
+        with patch("agent.chat.handlers.agent_run", new=slow_agent):
+            await asyncio.gather(
+                handle_message(update, ctx_a),
+                handle_message(update, ctx_b),
+            )
+
+        # Strict sequential: first run must fully complete before second starts.
+        assert call_order == ["start", "end", "start", "end"]
+
+    async def test_concurrent_different_chat_messages_run_in_parallel(self):
+        """Messages for different chat_ids must not block each other — they should
+        start concurrently even when each takes time to complete."""
+        from agent.chat.handlers import handle_message
+
+        call_order: list[str] = []
+        shared_bot_data: dict = {}
+
+        async def slow_agent(text: str, *, owner: str) -> str:
+            call_order.append(f"start:{owner}")
+            await asyncio.sleep(0.02)
+            call_order.append(f"end:{owner}")
+            return "done"
+
+        update_a = _make_update(text="msg", chat_id=100)
+        update_b = _make_update(text="msg", chat_id=200)
+        ctx_a = _make_context(bot_data=shared_bot_data)
+        ctx_b = _make_context(bot_data=shared_bot_data)
+
+        with patch("agent.chat.handlers.agent_run", new=slow_agent):
+            await asyncio.gather(
+                handle_message(update_a, ctx_a),
+                handle_message(update_b, ctx_b),
+            )
+
+        # Both must have started before either finished — proving true concurrency.
+        assert call_order[0].startswith("start:")
+        assert call_order[1].startswith("start:")
+        assert call_order[2].startswith("end:")
+        assert call_order[3].startswith("end:")
+
+    async def test_queued_message_still_receives_response(self):
+        """The second (queued) message must still produce a reply — the lock must
+        be released correctly even when the first run succeeds."""
+        from agent.chat.handlers import handle_message
+
+        shared_bot_data: dict = {}
+        responses = ["first response", "second response"]
+        call_count = 0
+
+        async def counting_agent(text: str, *, owner: str) -> str:
+            nonlocal call_count
+            await asyncio.sleep(0.01)
+            response = responses[call_count]
+            call_count += 1
+            return response
+
+        update = _make_update(text="msg", chat_id=55)
+        ctx_a = _make_context(bot_data=shared_bot_data)
+        ctx_b = _make_context(bot_data=shared_bot_data)
+
+        # Use separate reply_text mocks so we can count calls per context.
+        with patch("agent.chat.handlers.agent_run", new=counting_agent):
+            await asyncio.gather(
+                handle_message(update, ctx_a),
+                handle_message(update, ctx_b),
+            )
+
+        # Both messages must have been processed (agent called twice).
+        assert call_count == 2
+
+    async def test_lock_released_on_agent_exception(self):
+        """If the agent raises, the lock must still be released so subsequent
+        messages for the same chat are not permanently blocked."""
+        from agent.chat.handlers import handle_message
+
+        shared_bot_data: dict = {}
+        call_count = 0
+
+        async def failing_then_ok(text: str, *, owner: str) -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("LLM unavailable")
+            return "recovered"
+
+        update = _make_update(text="msg", chat_id=77)
+        ctx_a = _make_context(bot_data=shared_bot_data)
+        ctx_b = _make_context(bot_data=shared_bot_data)
+
+        with patch("agent.chat.handlers.agent_run", new=failing_then_ok):
+            # Run sequentially to guarantee order (first fails, second recovers).
+            await handle_message(update, ctx_a)
+            await handle_message(update, ctx_b)
+
+        # Second call must have reached the agent — lock was not left acquired.
+        assert call_count == 2
+        # Second call must have sent a real response, not an error message.
+        ctx_b.bot.send_chat_action.assert_called()
