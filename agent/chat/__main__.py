@@ -48,12 +48,21 @@ def main() -> None:
     """
     settings = get_settings()
 
-    # Configure Logfire — token is optional; if unset it runs in local/dev mode.
+    # Configure Logfire — token is optional.
+    # If unset, disable remote export entirely (send_to_logfire=False).
+    # Passing token=None causes logfire to look for a local auth token and
+    # fail with LogfireConfigError when none is found (e.g. in production).
     logfire_token = settings.logfire_token
-    logfire.configure(
-        token=logfire_token.get_secret_value() if logfire_token else None,
-        service_name="voxnix-bot",
-    )
+    if logfire_token:
+        logfire.configure(
+            token=logfire_token.get_secret_value(),
+            service_name="voxnix-bot",
+        )
+    else:
+        logfire.configure(
+            send_to_logfire=False,
+            service_name="voxnix-bot",
+        )
 
     token = settings.telegram_bot_token.get_secret_value()
     logger.info("Starting voxnix bot (model: %s)", settings.llm_model_string)

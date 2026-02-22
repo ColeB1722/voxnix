@@ -32,6 +32,7 @@
   config,
   lib,
   pkgs,
+  inputs,
   voxnix-src,
   ...
 }:
@@ -100,6 +101,7 @@ in
       pkgs.coreutils
       pkgs.bash
       pkgs.nixos-container
+      pkgs.sudo
     ];
 
     environment = {
@@ -112,6 +114,25 @@ in
       # in the service's StateDirectory rather than the (read-only) store path.
       UV_PROJECT_ENVIRONMENT = venvDir;
       UV_CACHE_DIR = uvCacheDir;
+
+      # Nix derives its cache path from $HOME/.cache/nix — it ignores
+      # XDG_CACHE_HOME entirely. The service runs as root whose $HOME is
+      # /root, which is read-only under ProtectSystem=strict. Redirecting
+      # HOME to the writable StateDirectory fixes nix eval (module discovery)
+      # and extra-container's internal nix invocations during container builds.
+      HOME = "/var/lib/voxnix-agent";
+
+      # XDG_CACHE_HOME is set as belt-and-suspenders for tools that respect
+      # the XDG spec (e.g. some Python tooling). It does NOT fix the Nix
+      # cache — that is solved by HOME above.
+      XDG_CACHE_HOME = "/var/lib/voxnix-agent/cache";
+
+      # extra-container uses NIX_PATH to resolve <nixpkgs/nixos> when building
+      # containers. Without this, it fails inside the service's mount namespace
+      # with "file 'nixpkgs/nixos' was not found in the Nix search path".
+      # We point it directly at the nixpkgs store path from our flake inputs —
+      # no channels needed, no mutable state.
+      NIX_PATH = "nixpkgs=${inputs.nixpkgs}";
 
       # Prevent Python from writing .pyc files into the read-only store path.
       PYTHONDONTWRITEBYTECODE = "1";
@@ -198,15 +219,21 @@ in
       # Directories the service needs write access to (beyond StateDirectory).
       # All paths must exist at service start — see systemd.tmpfiles.rules above.
       ReadWritePaths = [
+        "/etc/systemd-mutable" # extra-container installs dynamic units here
+        "/etc/nixos-containers" # extra-container symlinks <name>.conf here
         "/var/lib/nixos-containers" # nixos-container create/destroy
         "/var/lib/voxnix-agent" # own state (venv, cache)
         "/tank" # ZFS user datasets
         "/run" # systemd runtime, agenix secrets
         "/nix/var" # nix-daemon state (extra-container needs this)
+        "/tmp" # uv sync + Python tempfile (extra-container also needs this)
+        "/var/tmp" # fallback temp dir used by some Nix build tools
       ];
 
-      # Private /tmp — the agent writes temporary .nix expression files here.
-      PrivateTmp = true;
+      # PrivateTmp is intentionally NOT set here. extra-container needs access
+      # to the shared /tmp and /run for systemd unit installation. A private
+      # /tmp namespace would isolate the temp .nix files from the systemd
+      # machinery that extra-container uses to install container units.
     };
   };
 }

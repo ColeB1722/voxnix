@@ -34,8 +34,13 @@ class TestContainerSpecValid:
         assert spec.modules == ["fish"]
 
     def test_hyphenated_name(self):
-        spec = ContainerSpec(name="my-dev-container", owner="chat_1", modules=["git"])
-        assert spec.name == "my-dev-container"
+        spec = ContainerSpec(name="my-dev", owner="chat_1", modules=["git"])
+        assert spec.name == "my-dev"
+
+    def test_max_length_name(self):
+        """11 characters is the maximum allowed."""
+        spec = ContainerSpec(name="abcde-fghij", owner="chat_1", modules=["git"])
+        assert spec.name == "abcde-fghij"
 
     def test_numeric_owner(self):
         """Telegram chat IDs are numeric strings."""
@@ -45,6 +50,15 @@ class TestContainerSpecValid:
 
 class TestContainerSpecNameValidation:
     """Container names must be valid for systemd-nspawn / NixOS containers."""
+
+    def test_name_too_long_rejected(self):
+        """Names over 11 chars are rejected — privateNetwork interface name limit."""
+        with pytest.raises(ValidationError, match="too long"):
+            ContainerSpec(name="my-dev-container", owner="chat_1", modules=["git"])
+
+    def test_exactly_12_chars_rejected(self):
+        with pytest.raises(ValidationError, match="too long"):
+            ContainerSpec(name="abcde-fghijk", owner="chat_1", modules=["git"])
 
     def test_empty_name_rejected(self):
         with pytest.raises(ValidationError, match="name"):

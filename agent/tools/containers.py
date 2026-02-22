@@ -14,6 +14,7 @@ for quick diagnosis without digging through journalctl.
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +24,8 @@ import logfire
 
 from agent.nix_gen.generator import generate_container_expr
 from agent.tools.cli import run_command
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from agent.nix_gen.models import ContainerSpec
@@ -86,6 +89,10 @@ async def create_container(
                 "create",
                 tmp_path,
                 "--start",
+                # Container creation builds the full NixOS closure — on a cold
+                # store this can take several minutes downloading packages.
+                # 600s (10 min) gives headroom for first-time builds.
+                timeout_seconds=600,
             )
         finally:
             Path(tmp_path).unlink(missing_ok=True)
@@ -108,6 +115,13 @@ async def create_container(
             stdout=result.stdout,
             returncode=result.returncode,
         )
+        logger.error(
+            "create_container failed: name=%s returncode=%d stderr=%r stdout=%r",
+            spec.name,
+            result.returncode,
+            result.stderr,
+            result.stdout,
+        )
         return ContainerResult(
             success=False,
             name=spec.name,
@@ -119,10 +133,17 @@ async def create_container(
 async def destroy_container(name: str) -> ContainerResult:
     """Destroy a NixOS container and its filesystem.
 
-    Wraps `nixos-container destroy <name>`. This is a destructive
+    Wraps `extra-container destroy <name>`. This is a destructive
     operation — the container's ephemeral state is lost. Persistent
     data on ZFS bind mounts is unaffected (ZFS dataset lifecycle is
     managed separately via create_zfs_dataset / destroy_zfs_dataset).
+
+    Note: `nixos-container destroy` is intentionally NOT used here.
+    After a `nixos-rebuild switch`, NixOS activation adopts any conf
+    file present in /etc/nixos-containers/ into the system profile,
+    causing `nixos-container destroy` to refuse with "cannot destroy
+    declarative container". `extra-container destroy` handles cleanup
+    correctly for containers created with `extra-container create`.
 
     Args:
         name: Container name (must match the running container's machine name).
@@ -131,7 +152,7 @@ async def destroy_container(name: str) -> ContainerResult:
         ContainerResult indicating success or failure.
     """
     with logfire.span("container.destroy", container_name=name):
-        result = await run_command("nixos-container", "destroy", name)
+        result = await run_command("extra-container", "destroy", name)
 
         if result.success:
             logfire.info("Container '{container_name}' destroyed", container_name=name)
