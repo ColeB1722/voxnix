@@ -59,6 +59,62 @@ voxnix/
 - PydanticAI for agent framework — tools are Pydantic models
 - Logfire for all observability
 
+## Deployment Debugging Strategy
+
+When something breaks on the appliance, use SSH to diagnose directly rather than guessing from logs. This is significantly faster than the edit-deploy-wait cycle.
+
+### Triage order
+
+1. **Check service status and recent logs first**
+   ```bash
+   ssh admin@<ip> "systemctl is-active voxnix-agent"
+   ssh admin@<ip> "journalctl -u voxnix-agent -n 50 --no-pager | grep -v getUpdates"
+   ```
+
+2. **Reproduce the failing command directly on the appliance**
+   Don't guess what the agent is doing — run the exact command it would run:
+   ```bash
+   # Check the working directory and environment the service sees
+   ssh admin@<ip> "systemctl show voxnix-agent --property=WorkingDirectory,Environment"
+
+   # Run the CLI command directly (e.g. nix eval, extra-container)
+   ssh admin@<ip> "cd <working-dir> && <command> 2>&1"
+   ```
+
+3. **Test the Python layer in isolation**
+   Run the relevant Python code directly against the live environment:
+   ```bash
+   ssh admin@<ip> "/var/lib/voxnix-agent/.venv/bin/python -c 'from agent.x import y; ...'"
+   ```
+
+4. **Check systemd hardening interactions**
+   `ProtectSystem=strict`, `PrivateTmp`, and `ReadWritePaths` are common sources of
+   surprising failures. A command that works as admin may fail inside the service's
+   restricted namespace. Test inside the namespace if needed:
+   ```bash
+   ssh admin@<ip> "sudo nsenter --mount --pid --target \$(systemctl show voxnix-agent --property=MainPID --value) -- <command>"
+   ```
+
+### Common patterns
+
+| Symptom | Likely cause | Check |
+|---|---|---|
+| `Read-only file system` | `ProtectSystem=strict` blocking a write | Is the path in `ReadWritePaths`? Does `XDG_CACHE_HOME` need redirecting? |
+| `No such file or directory` in namespace setup | Path in `ReadWritePaths` doesn't exist yet | Add to `systemd.tmpfiles.rules` |
+| Timeout with no error | Command exceeds `timeout_seconds` default (60s) | Increase timeout for slow operations (builds, first evals) |
+| Works as admin, fails in service | Environment or namespace mismatch | Check `systemctl show` environment; test in the service namespace |
+
+### Key paths
+
+| Path | Purpose |
+|---|---|
+| `/var/lib/voxnix-agent/.venv` | Python virtualenv — contains installed packages |
+| `/var/lib/voxnix-agent/uv-cache` | uv download cache |
+| `/var/lib/voxnix-agent/cache` | Nix eval cache (XDG_CACHE_HOME) |
+| `/run/agenix/agent-env` | Decrypted secrets (tmpfs — gone on reboot) |
+| `systemctl show voxnix-agent` | Full service config including resolved env vars |
+| `journalctl -u voxnix-agent -f` | Live log tail |
+
 ## Code Review Workflow (CodeRabbit)
 
 Run CodeRabbit once per PR, when the PR is ready to merge — not mid-branch after every commit.
