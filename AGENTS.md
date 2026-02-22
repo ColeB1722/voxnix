@@ -101,6 +101,18 @@ Use existing labels where they fit (`bug`, `enhancement`, `documentation`). Don'
 
 ## Issue Backlog
 
+**Every idea, finding, and piece of tech debt gets a GitHub issue.** A thought that lives only in a PR comment, a conversation, or someone's head is a thought that will be lost. Issues are cheap; forgotten context is expensive.
+
+This applies to everything — not just bugs:
+- Half-baked feature ideas → issue (label: `enhancement`)
+- Tech debt identified during review → issue (label: `bug` or `enhancement`)
+- Architectural questions surfaced during implementation → issue
+- "We should do X someday" → issue
+
+The issue backlog is the project's memory across sessions. When starting a new feature, the backlog tells you what constraints, ideas, and unresolved questions already exist. Without it, every session starts from zero.
+
+### Before starting work
+
 Open issues represent tracked tech debt and deferred findings. Before starting work on any component, run:
 
 ```

@@ -46,12 +46,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Mapping from provider name → expected API key environment variable.
 # Used to validate that the correct key is present at startup rather than
 # surfacing a cryptic pydantic-ai error on the first LLM call.
-_PROVIDER_API_KEY_ENV: dict[str, str] = {
+# Providers mapped to None do not require an API key (e.g. ollama runs locally).
+_PROVIDER_API_KEY_ENV: dict[str, str | None] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
     "google": "GOOGLE_API_KEY",
     "mistral": "MISTRAL_API_KEY",
     "groq": "GROQ_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "ollama": None,
 }
 
 
@@ -130,7 +133,7 @@ class VoxnixSettings(BaseSettings):
         startup rather than a cryptic failure on the first LLM call.
         """
         key_env_var = _PROVIDER_API_KEY_ENV.get(self.llm_provider)
-        if key_env_var and not os.environ.get(key_env_var):
+        if key_env_var is not None and not os.environ.get(key_env_var):
             msg = (
                 f"LLM_PROVIDER is '{self.llm_provider}' but {key_env_var} is not set. "
                 f"Inject {key_env_var} via agenix or set it in your environment."

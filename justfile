@@ -34,8 +34,25 @@ ci: lint typecheck test
 
 # Build the full appliance
 build:
-    nix build .#appliance
+    nix build .#nixosConfigurations.appliance.config.system.build.toplevel
 
-# Deploy to appliance
+# Deploy to appliance (with SSH pre-flight check)
 deploy target:
+    @echo "Checking SSH connectivity to admin@{{ target }}..."
+    @ssh -q -o ConnectTimeout=5 -o BatchMode=yes admin@{{ target }} exit 2>/dev/null || \
+        (echo "❌ Cannot reach admin@{{ target }} — is the appliance running?"; exit 1)
+    @echo "✅ SSH OK — starting rebuild..."
     nixos-rebuild switch --flake .#appliance --target-host admin@{{ target }} --use-remote-sudo
+
+# Provision a new appliance (one-time, destructive — formats the target disk)
+provision target:
+    @echo "⚠️  This will FORMAT THE DISK on {{ target }}. All existing data will be destroyed."
+    @echo "   Target: root@{{ target }}"
+    @echo ""
+    @bash -c 'read -p "Type the target IP to confirm: " confirm && [ "$$confirm" = "{{ target }}" ] || (echo "Aborted."; exit 1)'
+    @echo ""
+    @echo "Checking SSH connectivity to root@{{ target }}..."
+    @ssh -q -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no root@{{ target }} exit 2>/dev/null || \
+        (echo "❌ Cannot reach root@{{ target }} — is the NixOS installer running? Did you set a root password?"; exit 1)
+    @echo "✅ SSH OK — starting provisioning..."
+    nixos-anywhere --flake .#appliance root@{{ target }}
