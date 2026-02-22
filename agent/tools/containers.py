@@ -86,6 +86,10 @@ async def create_container(
                 "create",
                 tmp_path,
                 "--start",
+                # Container creation builds the full NixOS closure — on a cold
+                # store this can take several minutes downloading packages.
+                # 600s (10 min) gives headroom for first-time builds.
+                timeout_seconds=600,
             )
         finally:
             Path(tmp_path).unlink(missing_ok=True)
