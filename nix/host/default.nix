@@ -58,9 +58,7 @@
       "systemd-journal"
     ];
     openssh.authorizedKeys.keys = [
-      # TODO: Replace with your SSH public key before first deploy.
-      # Generate with: ssh-keygen -t ed25519 -C "admin@voxnix"
-      "ssh-ed25519 AAAA_REPLACE_WITH_YOUR_PUBLIC_KEY admin@voxnix"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMYEMoAMxPAGD4AzBPCAYV6UiHrAeMm/AJIGXKCikkuc"
     ];
     # No password — SSH key only.
     hashedPassword = "!";
