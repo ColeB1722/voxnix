@@ -118,7 +118,7 @@ age-keygen -o ~/.config/age/voxnix.txt
 
 ```bash
 cd secrets
-agenix -e agent-env.age
+agenix -e agent-env.age --identity ~/.config/age/voxnix.txt
 ```
 
 Your editor will open. Paste the following (with your real values):
@@ -169,7 +169,7 @@ The NixOS VM now has its own SSH key. Add it to `secrets/secrets.nix` so the app
 ssh-keyscan -t ed25519 <vm-ip> 2>/dev/null
 # Paste the full ssh-ed25519 line as the `appliance` value in secrets/secrets.nix
 
-cd secrets && agenix --rekey
+cd secrets && agenix --rekey --identity ~/.config/age/voxnix.txt
 git add -A && git commit -m "secrets: rekey with host key"
 just deploy <vm-ip>
 ```
