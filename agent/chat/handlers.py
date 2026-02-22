@@ -51,7 +51,8 @@ def owner_from_update(update: Update) -> str:
     Returns:
         str(update.effective_chat.id) — always a non-empty string.
     """
-    assert update.effective_chat is not None  # guaranteed in message/command handlers
+    if update.effective_chat is None:
+        raise ValueError("owner_from_update called on an update with no effective_chat")
     return str(update.effective_chat.id)
 
 
@@ -155,8 +156,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     # Both are guaranteed non-None because we have a text message at this point.
-    assert update.effective_message is not None
-    assert update.effective_chat is not None
+    # Use explicit raises rather than assert — assertions are stripped by python -O.
+    if update.effective_message is None:
+        raise ValueError("handle_message called on an update with no effective_message")
+    if update.effective_chat is None:
+        raise ValueError("handle_message called on an update with no effective_chat")
 
     owner = owner_from_update(update)
     chat_id = update.effective_chat.id
@@ -209,7 +213,8 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• _Destroy container dev\\-abc_\n\n"
         "Type /help for more information."
     )
-    assert update.effective_message is not None
+    if update.effective_message is None:
+        raise ValueError("handle_start called on an update with no effective_message")
     await update.effective_message.reply_text(welcome, parse_mode="MarkdownV2")
 
 
@@ -236,5 +241,6 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "Just describe what you want in plain language — "
         "I'll figure out the right action."
     )
-    assert update.effective_message is not None
+    if update.effective_message is None:
+        raise ValueError("handle_help called on an update with no effective_message")
     await update.effective_message.reply_text(help_text, parse_mode="MarkdownV2")

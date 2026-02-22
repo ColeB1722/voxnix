@@ -41,7 +41,10 @@ from agent.tools.workloads import Workload, WorkloadError, get_container_owner, 
 
 # ── Logfire instrumentation ────────────────────────────────────────────────────
 
-logfire.configure()
+# logfire.configure() is intentionally absent here — it is called in
+# agent/chat/__main__.py with the actual token from VoxnixSettings.
+# A module-level configure() without credentials would race (and win over)
+# the entry-point call, discarding the token before it can be set.
 logfire.instrument_pydantic_ai()
 
 # ── Dependencies ───────────────────────────────────────────────────────────────

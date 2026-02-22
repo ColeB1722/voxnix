@@ -47,3 +47,9 @@ select = [
 testpaths = ["agent"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+filterwarnings = [
+    # logfire.instrument_pydantic_ai() fires at import time in agent.py.
+    # configure() is intentionally deferred to the entry point (agent/chat/__main__.py)
+    # where the token is available, so this warning is expected in tests.
+    "ignore::logfire._internal.config.LogfireNotConfiguredWarning",
+]
