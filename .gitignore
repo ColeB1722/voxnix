@@ -24,6 +24,8 @@ build/
 .DS_Store
 Thumbs.db
 
-# Secrets (never commit)
+# Secrets — encrypted .age files in secrets/ are safe to commit (agenix).
+# Only ignore .age files outside the secrets directory.
 *.age
+!secrets/*.age
 !*.age.example

@@ -74,15 +74,19 @@ async def get_container_owner(name: str) -> str | None:
     # holistically across the agent. Useful for tracing per-container queries
     # and debugging owner filtering performance.
     """
-    result = await run_command(
-        "nixos-container",
-        "run",
-        name,
-        "--",
-        "sh",
-        "-c",
-        "echo $VOXNIX_OWNER",
-    )
+    try:
+        result = await run_command(
+            "nixos-container",
+            "run",
+            name,
+            "--",
+            "sh",
+            "-c",
+            "echo $VOXNIX_OWNER",
+            timeout_seconds=10,
+        )
+    except TimeoutError:
+        return None
     if not result.success or not result.stdout:
         return None
     return result.stdout.strip() or None
@@ -107,7 +111,14 @@ async def list_workloads(*, owner: str | None = None) -> list[Workload]:
     """
     # TODO(logfire): Wrap this function in a Logfire span when wiring up
     # observability holistically. Capture owner, result count, and duration.
-    result = await run_command("machinectl", "list", "--output=json", "--no-pager")
+    try:
+        result = await run_command(
+            "machinectl", "list", "--output=json", "--no-pager", timeout_seconds=15
+        )
+    except TimeoutError:
+        raise WorkloadError(
+            "machinectl timed out after 15s — is systemd-machined responsive?"
+        ) from None
 
     if not result.success:
         raise WorkloadError(f"machinectl failed (exit {result.returncode}): {result.stderr}")
