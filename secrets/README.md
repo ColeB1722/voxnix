@@ -29,7 +29,7 @@ Replace the `admin` placeholder with the public key printed above.
 
 ```bash
 cd secrets
-agenix -e agent-env.age
+agenix -e agent-env.age --identity ~/.config/age/voxnix.txt
 ```
 
 Your editor will open. Paste the following (with your real values):
@@ -67,7 +67,7 @@ ssh-keyscan -t ed25519 <vm-ip> 2>/dev/null
 Paste the full `ssh-ed25519 AAAA...` line as the `appliance` value in `secrets.nix`, then re-encrypt all secrets so the VM can decrypt them at boot:
 
 ```bash
-agenix --rekey
+agenix --rekey --identity ~/.config/age/voxnix.txt
 git add -A && git commit -m "secrets: rekey with host key"
 just deploy <vm-ip>
 ```
@@ -77,6 +77,6 @@ just deploy <vm-ip>
 Edit the encrypted file and redeploy:
 
 ```bash
-agenix -e agent-env.age   # opens your editor with decrypted content
+agenix -e agent-env.age --identity ~/.config/age/voxnix.txt   # opens your editor with decrypted content
 just deploy <vm-ip>        # deploys updated config, restarts the agent
 ```
