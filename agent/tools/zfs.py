@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 
 import logfire
 
+from agent.config import get_settings
 from agent.tools.cli import run_command
 
 logger = logging.getLogger(__name__)
@@ -71,11 +72,69 @@ def _workspace_mount_path(owner: str, container_name: str) -> str:
     return f"/tank/users/{owner}/containers/{container_name}/workspace"
 
 
+async def _apply_quota(dataset: str, quota: str) -> ZfsResult:
+    """Apply a ZFS quota to a dataset.
+
+    Wraps `zfs set quota=<quota> <dataset>`. Idempotent — setting a quota
+    on a dataset that already has one just updates the value.
+
+    Args:
+        dataset: Full ZFS dataset path (e.g. "tank/users/123456789").
+        quota: ZFS size string (e.g. "10G", "50G", "none" to disable).
+
+    Returns:
+        ZfsResult indicating success or failure.
+    """
+    with logfire.span("zfs.apply_quota", dataset=dataset, quota=quota):
+        result = await run_command(
+            "zfs",
+            "set",
+            f"quota={quota}",
+            dataset,
+            timeout_seconds=10,
+        )
+
+        if result.success:
+            logfire.info(
+                "Applied quota {quota} to dataset '{dataset}'",
+                quota=quota,
+                dataset=dataset,
+            )
+            return ZfsResult(
+                success=True,
+                dataset=dataset,
+                message=f"Applied quota {quota} to '{dataset}'.",
+            )
+
+        logfire.error(
+            "Failed to apply quota {quota} to '{dataset}'",
+            quota=quota,
+            dataset=dataset,
+            stderr=result.stderr,
+            returncode=result.returncode,
+        )
+        logger.error(
+            "_apply_quota failed: dataset=%s quota=%s returncode=%d stderr=%r",
+            dataset,
+            quota,
+            result.returncode,
+            result.stderr,
+        )
+        return ZfsResult(
+            success=False,
+            dataset=dataset,
+            message=f"Failed to apply quota {quota} to '{dataset}'.",
+            error=result.stderr or result.stdout,
+        )
+
+
 async def create_user_datasets(owner: str) -> ZfsResult:
-    """Ensure the per-user dataset root exists.
+    """Ensure the per-user dataset root exists with a quota applied.
 
     Creates tank/users/<owner> if it doesn't already exist. Idempotent —
-    succeeds silently if the dataset is already present.
+    succeeds silently if the dataset is already present. Always applies
+    the per-user quota from VoxnixSettings.zfs_user_quota (default: 10G),
+    even on existing datasets, so the quota stays in sync with config changes.
 
     The -p flag creates all intermediate datasets (though tank/users should
     already exist from the disko layout in storage.nix).
@@ -87,8 +146,9 @@ async def create_user_datasets(owner: str) -> ZfsResult:
         ZfsResult indicating success or failure.
     """
     dataset = _user_dataset(owner)
+    quota = get_settings().zfs_user_quota
 
-    with logfire.span("zfs.create_user_datasets", owner=owner, dataset=dataset):
+    with logfire.span("zfs.create_user_datasets", owner=owner, dataset=dataset, quota=quota):
         # Check if dataset already exists — zfs list returns 0 if it does.
         check = await run_command(
             "zfs",
@@ -104,10 +164,17 @@ async def create_user_datasets(owner: str) -> ZfsResult:
                 "User dataset '{dataset}' already exists",
                 dataset=dataset,
             )
+            # Always apply quota — keeps it in sync with config changes.
+            quota_result = await _apply_quota(dataset, quota)
+            if not quota_result.success:
+                logger.error(
+                    "User dataset exists but quota application failed: %s",
+                    quota_result.error,
+                )
             return ZfsResult(
                 success=True,
                 dataset=dataset,
-                message=f"User dataset '{dataset}' already exists.",
+                message=f"User dataset '{dataset}' already exists (quota: {quota}).",
             )
 
         # Dataset doesn't exist — create it.
@@ -121,10 +188,17 @@ async def create_user_datasets(owner: str) -> ZfsResult:
 
         if result.success:
             logfire.info("Created user dataset '{dataset}'", dataset=dataset)
+            # Apply quota to the newly created dataset.
+            quota_result = await _apply_quota(dataset, quota)
+            if not quota_result.success:
+                logger.error(
+                    "User dataset created but quota application failed: %s",
+                    quota_result.error,
+                )
             return ZfsResult(
                 success=True,
                 dataset=dataset,
-                message=f"Created user dataset '{dataset}'.",
+                message=f"Created user dataset '{dataset}' (quota: {quota}).",
             )
 
         logfire.error(
@@ -331,3 +405,127 @@ async def destroy_container_dataset(owner: str, container_name: str) -> ZfsResul
             message=f"Failed to destroy container dataset '{container_ds}'.",
             error=result.stderr or result.stdout,
         )
+
+
+@dataclass
+class ZfsQuotaInfo:
+    """Storage usage information for a user's ZFS dataset."""
+
+    success: bool
+    owner: str
+    quota: str
+    used: str
+    available: str
+    message: str
+    error: str | None = field(default=None)
+
+
+async def get_user_storage_info(owner: str) -> ZfsQuotaInfo:
+    """Query storage usage and quota for a user's ZFS dataset root.
+
+    Wraps `zfs get -Hp quota,used,available tank/users/<owner>` and parses
+    the machine-readable output into a structured result.
+
+    Args:
+        owner: User identifier (Telegram chat_id).
+
+    Returns:
+        ZfsQuotaInfo with quota, used, and available space — or an error
+        if the dataset doesn't exist or the query fails.
+    """
+    dataset = _user_dataset(owner)
+
+    with logfire.span("zfs.get_user_storage_info", owner=owner, dataset=dataset):
+        result = await run_command(
+            "zfs",
+            "get",
+            "-Hp",
+            "-o",
+            "property,value",
+            "quota,used,available",
+            dataset,
+            timeout_seconds=10,
+        )
+
+        if not result.success:
+            logfire.error(
+                "Failed to query storage info for '{dataset}'",
+                dataset=dataset,
+                stderr=result.stderr,
+            )
+            return ZfsQuotaInfo(
+                success=False,
+                owner=owner,
+                quota="unknown",
+                used="unknown",
+                available="unknown",
+                message=f"Failed to query storage for user '{owner}'.",
+                error=result.stderr or result.stdout,
+            )
+
+        # Parse the tab-separated output lines:
+        #   quota\t<bytes|none>
+        #   used\t<bytes>
+        #   available\t<bytes>
+        props: dict[str, str] = {}
+        for line in result.stdout.strip().splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) == 2:
+                props[parts[0].strip()] = parts[1].strip()
+
+        quota_raw = props.get("quota", "0")
+        used_raw = props.get("used", "0")
+        available_raw = props.get("available", "0")
+
+        quota_str = _human_size(quota_raw)
+        used_str = _human_size(used_raw)
+        available_str = _human_size(available_raw)
+
+        logfire.info(
+            "Storage info for '{dataset}': quota={quota}, used={used}, available={available}",
+            dataset=dataset,
+            quota=quota_str,
+            used=used_str,
+            available=available_str,
+        )
+        return ZfsQuotaInfo(
+            success=True,
+            owner=owner,
+            quota=quota_str,
+            used=used_str,
+            available=available_str,
+            message=(
+                f"Storage for user '{owner}': "
+                f"used {used_str} of {quota_str} quota ({available_str} available)."
+            ),
+        )
+
+
+def _human_size(raw: str) -> str:
+    """Convert a raw ZFS byte count or 'none' to a human-readable string.
+
+    ZFS -Hp output returns raw bytes (e.g. "10737418240") or literal strings
+    like "none" or "0". This converts bytes to the nearest sensible unit.
+
+    Args:
+        raw: Raw value from `zfs get -Hp` output.
+
+    Returns:
+        Human-readable size string (e.g. "10.0G", "512M", "none").
+    """
+    if raw in ("none", "0", "-", ""):
+        return raw if raw else "0"
+
+    try:
+        size = int(raw)
+    except ValueError:
+        return raw
+
+    for unit in ("B", "K", "M", "G", "T"):
+        if size < 1024:
+            if unit == "B":
+                return f"{size}{unit}"
+            return f"{size:.1f}{unit}"
+        size /= 1024
+
+    return f"{size:.1f}P"

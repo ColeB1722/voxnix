@@ -38,6 +38,7 @@ from agent.tools.containers import (
     stop_container,
 )
 from agent.tools.workloads import Workload, WorkloadError, get_container_owner, list_workloads
+from agent.tools.zfs import get_user_storage_info
 
 # ── Logfire instrumentation ────────────────────────────────────────────────────
 
@@ -303,7 +304,25 @@ async def tool_list_workloads(ctx: RunContext[VoxnixDeps]) -> str:
     return "\n".join(lines)
 
 
-# ── Run helper ─────────────────────────────────────────────────────────────────
+@agent.tool
+async def tool_storage_usage(ctx: RunContext[VoxnixDeps]) -> str:
+    """Show storage usage and quota for the current user.
+
+    Reports how much disk space the user's container workspaces are
+    consuming and how much remains under their quota.
+
+    Returns:
+        A plain-language summary of the user's storage usage.
+    """
+    info = await get_user_storage_info(ctx.deps.owner)
+
+    if not info.success:
+        return f"❌ Could not query storage: {info.error}"
+
+    return info.message
+
+
+# ── Run helper ─────────────────────────────────────────────────────────────
 
 
 async def run(message: str, owner: str) -> str:

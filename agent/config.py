@@ -118,6 +118,27 @@ class VoxnixSettings(BaseSettings):
     See docs/architecture.md § Private access — Tailscale.
     """
 
+    # ── ZFS quotas ───────────────────────────────────────────────────────────
+
+    zfs_user_quota: str = "10G"
+    """Per-user ZFS quota applied to tank/users/<chat_id>.
+
+    Limits the total disk space consumed by all of a user's container
+    workspaces combined. Individual containers share the user's quota —
+    no per-container quota needed (the user allocates space across
+    containers as they see fit).
+
+    Applied by create_user_datasets() when provisioning a new user's
+    dataset root. Idempotent — setting a quota on an existing dataset
+    just updates the limit.
+
+    Format: ZFS size string (e.g. "10G", "50G", "1T", "none" to disable).
+    Configurable via ZFS_USER_QUOTA environment variable in agenix.
+    Default: 10G — conservative for a shared homelab appliance.
+
+    See docs/architecture.md § Trust Model — ZFS quotas per user.
+    """
+
     # ── Observability ────────────────────────────────────────────────────────
 
     logfire_token: SecretStr | None = None
