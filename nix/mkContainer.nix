@@ -113,7 +113,7 @@ let
       {
         "/workspace" = {
           hostPath = validSpec.workspace;
-          isReadWrite = true;
+          isReadOnly = false;
         };
       }
     else
