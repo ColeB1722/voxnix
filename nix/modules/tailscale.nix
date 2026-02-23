@@ -19,6 +19,20 @@
 #   The --ssh flag enables Tailscale SSH, so users can `ssh root@<container-name>`
 #   via their tailnet without managing SSH keys inside the container.
 #
+# Why Type=simple (not oneshot):
+#   NixOS implicitly adds Before=multi-user.target to any unit with
+#   wantedBy=["multi-user.target"]. With Type=oneshot, systemd-nspawn cannot
+#   send its sd_notify READY=1 signal to the host until the oneshot script
+#   exits — i.e., until `tailscale up` completes. `tailscale up` contacts the
+#   Tailscale control plane and can take 30-120 seconds on first enrollment.
+#   The host container@.service has TimeoutStartSec=1min, so the container is
+#   killed and restarted in a loop before enrollment ever completes.
+#
+#   With Type=simple, systemd considers the service "started" as soon as the
+#   process launches (not when it exits). multi-user.target can then proceed,
+#   nspawn sends READY to the host, and `tailscale up` runs to completion in
+#   the background without racing against the 1-minute host timeout.
+#
 # See docs/architecture.md § Private access — Tailscale.
 { pkgs, ... }:
 {
@@ -31,9 +45,12 @@
   # Allow incoming SSH via Tailscale (port 22 is used by Tailscale SSH proxy).
   networking.firewall.allowedTCPPorts = [ 22 ];
 
-  # Oneshot service that runs `tailscale up` with the injected auth key
-  # on first boot. Subsequent boots where the node is already registered
-  # are handled gracefully by tailscale (it reconnects automatically).
+  # Background service that runs `tailscale up` with the injected auth key.
+  # Uses Type=simple so multi-user.target is not blocked waiting for
+  # enrollment to complete (see Why Type=simple above).
+  #
+  # On subsequent boots where the node is already registered, tailscaled
+  # reconnects automatically — this service exits early via the status check.
   systemd.services.tailscale-autoconnect = {
     description = "Automatic Tailscale enrollment for voxnix container";
     after = [
@@ -44,8 +61,10 @@
     wantedBy = [ "multi-user.target" ];
 
     serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
+      # simple: service is considered started as soon as the process launches.
+      # This prevents the unit from blocking multi-user.target (and therefore
+      # the nspawn READY notification to the host) while tailscale up runs.
+      Type = "simple";
     };
 
     script = ''
@@ -60,7 +79,9 @@
       # Wait for tailscaled socket to be ready.
       sleep 2
 
-      # Check if already connected — skip if so (idempotent on restart).
+      # Check if already connected — exit early if so (idempotent on restart).
+      # tailscaled reconnects automatically on subsequent boots; we only need
+      # to run `tailscale up` on first enrollment.
       status=$(${pkgs.tailscale}/bin/tailscale status --json 2>/dev/null | ${pkgs.jq}/bin/jq -r '.BackendState // "NoState"')
       if [ "$status" = "Running" ]; then
         echo "Tailscale already connected, skipping enrollment."
