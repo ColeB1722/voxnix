@@ -175,10 +175,11 @@ async def tool_destroy_container(
     ctx: RunContext[VoxnixDeps],
     name: str,
 ) -> str:
-    """Destroy a container and its ephemeral state.
+    """Destroy a container, its ephemeral state, and its ZFS dataset.
 
     Only destroys containers owned by the requesting user.
-    ZFS workspace data is not affected — it persists on the host.
+    The container's ZFS dataset (persistent workspace) is cleaned up
+    after the container itself is torn down.
 
     Args:
         name: Name of the container to destroy.
@@ -192,7 +193,7 @@ async def tool_destroy_container(
     if denied := await _check_ownership(name, ctx.deps.owner):
         return denied
 
-    result: ContainerResult = await destroy_container(name)
+    result: ContainerResult = await destroy_container(name, owner=ctx.deps.owner)
 
     if result.success:
         return f"✅ Container `{result.name}` destroyed."

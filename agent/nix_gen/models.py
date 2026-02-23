@@ -72,6 +72,14 @@ class ContainerSpec(BaseModel):
     name: str
     owner: str
     modules: list[str]
+    workspace_path: str | None = None
+    """Host-side path to bind-mount into the container at /workspace.
+
+    Set by the agent after create_container_dataset() provisions the ZFS
+    dataset. When present, mkContainer.nix adds a bindMounts entry.
+    When None, the workspace module still creates /workspace as an
+    ephemeral directory inside the container (no persistence).
+    """
 
     @field_validator("name")
     @classmethod

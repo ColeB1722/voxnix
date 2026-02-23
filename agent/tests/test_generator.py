@@ -38,11 +38,13 @@ def make_spec(
     name: str = "dev-abc",
     owner: str = "chat_123",
     modules: list[str] | None = None,
+    workspace_path: str | None = None,
 ) -> ContainerSpec:
     return ContainerSpec(
         name=name,
         owner=owner,
         modules=modules if modules is not None else ["git", "fish"],
+        workspace_path=workspace_path,
     )
 
 
@@ -100,6 +102,30 @@ class TestGenerateContainerExpr:
     def test_different_flake_paths(self):
         expr = generate_container_expr(make_spec(), flake_path="/opt/voxnix")
         assert "/opt/voxnix/nix/mkContainer.nix" in expr
+
+    def test_workspace_path_included_when_set(self):
+        spec = make_spec(workspace_path="/tank/users/chat_123/containers/dev-abc/workspace")
+        expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
+        assert "workspace" in expr
+        assert '"/tank/users/chat_123/containers/dev-abc/workspace"' in expr
+
+    def test_workspace_path_omitted_when_none(self):
+        spec = make_spec(workspace_path=None)
+        expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
+        assert "workspace" not in expr
+
+    def test_workspace_path_as_nix_string(self):
+        """workspace_path should appear as a Nix string assignment."""
+        spec = make_spec(workspace_path="/tank/users/123/containers/dev/workspace")
+        expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
+        assert 'workspace = "/tank/users/123/containers/dev/workspace";' in expr
+
+    def test_workspace_path_with_special_chars_escaped(self):
+        """Dollar signs in paths must be escaped for Nix."""
+        spec = make_spec(workspace_path="/tank/users/$bad/workspace")
+        expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
+        assert "\\$" in expr
+        assert '"/$bad"' not in expr
 
 
 class TestNixStringEscaping:

@@ -147,8 +147,38 @@ class TestContainerSpecSerialization:
         """Serialized JSON should not contain unexpected fields."""
         spec = ContainerSpec(name="dev", owner="chat_1", modules=["git"])
         data = json.loads(spec.model_dump_json())
-        expected_keys = {"name", "owner", "modules"}
+        expected_keys = {"name", "owner", "modules", "workspace_path"}
         assert set(data.keys()) == expected_keys
+
+    def test_workspace_path_default_is_none(self):
+        spec = ContainerSpec(name="dev", owner="chat_1", modules=["git"])
+        assert spec.workspace_path is None
+
+    def test_workspace_path_included_in_json(self):
+        spec = ContainerSpec(
+            name="dev",
+            owner="chat_1",
+            modules=["git"],
+            workspace_path="/tank/users/chat_1/containers/dev/workspace",
+        )
+        data = json.loads(spec.model_dump_json())
+        assert data["workspace_path"] == "/tank/users/chat_1/containers/dev/workspace"
+
+    def test_workspace_path_none_in_json(self):
+        spec = ContainerSpec(name="dev", owner="chat_1", modules=["git"])
+        data = json.loads(spec.model_dump_json())
+        assert data["workspace_path"] is None
+
+    def test_roundtrip_with_workspace_path(self):
+        original = ContainerSpec(
+            name="dev-abc",
+            owner="chat_123",
+            modules=["git", "fish"],
+            workspace_path="/tank/users/chat_123/containers/dev-abc/workspace",
+        )
+        json_str = original.model_dump_json()
+        restored = ContainerSpec.model_validate_json(json_str)
+        assert original == restored
 
 
 # ── validate_container_name (standalone) ──────────────────────────────────────

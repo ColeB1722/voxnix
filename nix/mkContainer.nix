@@ -5,9 +5,10 @@
 #
 # Spec format:
 # {
-#   name    : string       — container name (e.g. "dev-abc")
-#   modules : [string]     — module names from the module library (e.g. ["git" "fish"])
-#   owner   : string       — owner identifier, typically a Telegram chat_id
+#   name      : string            — container name (e.g. "dev-abc")
+#   modules   : [string]          — module names from the module library (e.g. ["git" "fish"])
+#   owner     : string            — owner identifier, typically a Telegram chat_id
+#   workspace : string (optional) — host path to bind-mount at /workspace in the container
 # }
 #
 # Returns:
@@ -84,6 +85,26 @@ let
       environment.variables.VOXNIX_OWNER = validSpec.owner;
       environment.variables.VOXNIX_CONTAINER = validSpec.name;
     };
+
+  # Optional workspace bind mount — when spec.workspace is set (a host path string),
+  # the ZFS dataset at that path is bind-mounted into the container at /workspace.
+  # The workspace module (nix/modules/workspace.nix) ensures the mount point exists
+  # inside the container via systemd.tmpfiles.rules.
+  #
+  # When spec.workspace is absent, no bind mount is added — the workspace module
+  # still creates /workspace as an ephemeral directory inside the container.
+  hasWorkspace =
+    builtins.hasAttr "workspace" validSpec && builtins.isString (validSpec.workspace or "");
+  workspaceBindMounts =
+    if hasWorkspace then
+      {
+        "/workspace" = {
+          hostPath = validSpec.workspace;
+          isReadWrite = true;
+        };
+      }
+    else
+      { };
 in
 # Force strict evaluation of resolvedModules before returning the result.
 # Without this, Nix's laziness means unknown module errors only surface
@@ -94,6 +115,9 @@ builtins.deepSeq resolvedModules {
     # Inter-container communication goes through the shared bridge.
     privateNetwork = true;
     autoStart = true;
+
+    # Workspace bind mount (empty attrset when no workspace configured).
+    bindMounts = workspaceBindMounts;
 
     config =
       { ... }:
