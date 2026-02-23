@@ -49,6 +49,14 @@
     };
 
     script = ''
+      # Source NixOS environment — TAILSCALE_AUTH_KEY is injected here via
+      # environment.variables in mkContainer.nix. systemd services do not
+      # source /etc/set-environment automatically (that's only for login shells),
+      # so we must do it explicitly.
+      if [ -f /etc/set-environment ]; then
+        source /etc/set-environment
+      fi
+
       # Wait for tailscaled socket to be ready.
       sleep 2
 
