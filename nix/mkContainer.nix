@@ -86,6 +86,19 @@ let
       environment.variables.VOXNIX_CONTAINER = validSpec.name;
     };
 
+  # Optional Tailscale auth key — when spec.tailscaleAuthKey is set, inject it
+  # as an environment variable so the tailscale module's autoconnect service
+  # can read it. This follows the same pattern as VOXNIX_OWNER injection.
+  hasTailscaleKey =
+    builtins.hasAttr "tailscaleAuthKey" validSpec
+    && builtins.isString (validSpec.tailscaleAuthKey or "")
+    && (validSpec.tailscaleAuthKey or "") != "";
+  tailscaleConfig =
+    { ... }:
+    {
+      environment.variables.TAILSCALE_AUTH_KEY = validSpec.tailscaleAuthKey;
+    };
+
   # Optional workspace bind mount — when spec.workspace is set (a host path string),
   # the ZFS dataset at that path is bind-mounted into the container at /workspace.
   # The workspace module (nix/modules/workspace.nix) ensures the mount point exists
@@ -119,10 +132,24 @@ builtins.deepSeq resolvedModules {
     # Workspace bind mount (empty attrset when no workspace configured).
     bindMounts = workspaceBindMounts;
 
+    # Allow /dev/net/tun inside the container — required by Tailscale for
+    # kernel-mode WireGuard. systemd-nspawn blocks device access by default;
+    # this allowedDevices entry grants read-write access to the TUN device.
+    allowedDevices = [
+      {
+        node = "/dev/net/tun";
+        modifier = "rwm";
+      }
+    ];
+
     config =
       { ... }:
       {
-        imports = [ baseConfig ] ++ resolvedModules;
+        imports = [
+          baseConfig
+        ]
+        ++ (if hasTailscaleKey then [ tailscaleConfig ] else [ ])
+        ++ resolvedModules;
       };
   };
 }

@@ -93,6 +93,8 @@ def generate_container_expr(
     optional_fields = ""
     if spec.workspace_path:
         optional_fields += f"\n    workspace = {_nix_string(spec.workspace_path)};"
+    if spec.tailscale_auth_key:
+        optional_fields += f"\n    tailscaleAuthKey = {_nix_string(spec.tailscale_auth_key)};"
 
     return f"""\
 let

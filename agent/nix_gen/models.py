@@ -81,6 +81,18 @@ class ContainerSpec(BaseModel):
     ephemeral directory inside the container (no persistence).
     """
 
+    tailscale_auth_key: str | None = None
+    """Tailscale reusable auth key for container enrollment.
+
+    Set by the agent from VoxnixSettings.tailscale_auth_key when the
+    spec includes the 'tailscale' module. When present, mkContainer.nix
+    injects it as environment.variables.TAILSCALE_AUTH_KEY, which the
+    tailscale-autoconnect oneshot service reads on first boot.
+
+    When None and 'tailscale' is in modules, the agent should refuse
+    to create the container (missing auth key = broken Tailscale).
+    """
+
     @field_validator("name")
     @classmethod
     def validate_name(cls, v: str) -> str:

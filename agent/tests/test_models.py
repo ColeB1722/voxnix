@@ -147,7 +147,7 @@ class TestContainerSpecSerialization:
         """Serialized JSON should not contain unexpected fields."""
         spec = ContainerSpec(name="dev", owner="chat_1", modules=["git"])
         data = json.loads(spec.model_dump_json())
-        expected_keys = {"name", "owner", "modules", "workspace_path"}
+        expected_keys = {"name", "owner", "modules", "workspace_path", "tailscale_auth_key"}
         assert set(data.keys()) == expected_keys
 
     def test_workspace_path_default_is_none(self):
@@ -175,6 +175,48 @@ class TestContainerSpecSerialization:
             owner="chat_123",
             modules=["git", "fish"],
             workspace_path="/tank/users/chat_123/containers/dev-abc/workspace",
+        )
+        json_str = original.model_dump_json()
+        restored = ContainerSpec.model_validate_json(json_str)
+        assert original == restored
+
+    def test_tailscale_auth_key_default_is_none(self):
+        spec = ContainerSpec(name="dev", owner="chat_1", modules=["git"])
+        assert spec.tailscale_auth_key is None
+
+    def test_tailscale_auth_key_included_in_json(self):
+        spec = ContainerSpec(
+            name="dev",
+            owner="chat_1",
+            modules=["git", "tailscale"],
+            tailscale_auth_key="tskey-auth-abc123",
+        )
+        data = json.loads(spec.model_dump_json())
+        assert data["tailscale_auth_key"] == "tskey-auth-abc123"
+
+    def test_tailscale_auth_key_none_in_json(self):
+        spec = ContainerSpec(name="dev", owner="chat_1", modules=["git"])
+        data = json.loads(spec.model_dump_json())
+        assert data["tailscale_auth_key"] is None
+
+    def test_roundtrip_with_tailscale_auth_key(self):
+        original = ContainerSpec(
+            name="dev-abc",
+            owner="chat_123",
+            modules=["git", "tailscale"],
+            tailscale_auth_key="tskey-auth-xyz789",
+        )
+        json_str = original.model_dump_json()
+        restored = ContainerSpec.model_validate_json(json_str)
+        assert original == restored
+
+    def test_roundtrip_with_all_optional_fields(self):
+        original = ContainerSpec(
+            name="dev-abc",
+            owner="chat_123",
+            modules=["git", "fish", "tailscale"],
+            workspace_path="/tank/users/chat_123/containers/dev-abc/workspace",
+            tailscale_auth_key="tskey-auth-full",
         )
         json_str = original.model_dump_json()
         restored = ContainerSpec.model_validate_json(json_str)

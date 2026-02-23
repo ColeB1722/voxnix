@@ -39,12 +39,14 @@ def make_spec(
     owner: str = "chat_123",
     modules: list[str] | None = None,
     workspace_path: str | None = None,
+    tailscale_auth_key: str | None = None,
 ) -> ContainerSpec:
     return ContainerSpec(
         name=name,
         owner=owner,
         modules=modules if modules is not None else ["git", "fish"],
         workspace_path=workspace_path,
+        tailscale_auth_key=tailscale_auth_key,
     )
 
 
@@ -126,6 +128,41 @@ class TestGenerateContainerExpr:
         expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
         assert "\\$" in expr
         assert '"/$bad"' not in expr
+
+    def test_tailscale_auth_key_included_when_set(self):
+        spec = make_spec(tailscale_auth_key="tskey-auth-abc123")
+        expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
+        assert "tailscaleAuthKey" in expr
+        assert '"tskey-auth-abc123"' in expr
+
+    def test_tailscale_auth_key_omitted_when_none(self):
+        spec = make_spec(tailscale_auth_key=None)
+        expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
+        assert "tailscaleAuthKey" not in expr
+
+    def test_tailscale_auth_key_as_nix_string(self):
+        """tailscaleAuthKey should appear as a Nix string assignment."""
+        spec = make_spec(tailscale_auth_key="tskey-auth-xyz789")
+        expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
+        assert 'tailscaleAuthKey = "tskey-auth-xyz789";' in expr
+
+    def test_tailscale_auth_key_special_chars_escaped(self):
+        """Auth keys with dollar signs must be escaped for Nix."""
+        spec = make_spec(tailscale_auth_key="tskey-$pecial")
+        expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
+        assert "\\$" in expr
+
+    def test_both_workspace_and_tailscale_included(self):
+        """Both optional fields should appear in the spec when set."""
+        spec = make_spec(
+            workspace_path="/tank/users/123/containers/dev/workspace",
+            tailscale_auth_key="tskey-auth-both",
+        )
+        expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
+        assert "workspace" in expr
+        assert "tailscaleAuthKey" in expr
+        assert '"/tank/users/123/containers/dev/workspace"' in expr
+        assert '"tskey-auth-both"' in expr
 
 
 class TestNixStringEscaping:

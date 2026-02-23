@@ -98,6 +98,26 @@ class VoxnixSettings(BaseSettings):
     telegram_bot_token: SecretStr
     """Telegram Bot API token. SecretStr prevents accidental logging."""
 
+    # ── Tailscale ────────────────────────────────────────────────────────────
+
+    tailscale_auth_key: SecretStr | None = None
+    """Reusable Tailscale auth key for container enrollment.
+
+    Injected into containers that include the 'tailscale' module via
+    environment.variables.TAILSCALE_AUTH_KEY in mkContainer.nix.
+
+    Optional — the agent can function without Tailscale (containers are
+    still reachable from the host LAN). But if a user requests the
+    'tailscale' module and no auth key is configured, the agent returns
+    a clear error rather than creating a broken container.
+
+    Generate a reusable, ephemeral key from the Tailscale admin console.
+    'Reusable' so multiple containers can use it; 'ephemeral' so devices
+    auto-expire if the container is destroyed and never re-registered.
+
+    See docs/architecture.md § Private access — Tailscale.
+    """
+
     # ── Observability ────────────────────────────────────────────────────────
 
     logfire_token: SecretStr | None = None
