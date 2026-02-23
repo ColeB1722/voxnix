@@ -152,15 +152,16 @@ builtins.deepSeq resolvedModules {
         imports = [
           baseConfig
           # Bridge networking — get IP from dnsmasq on br-vox via DHCP.
-          # nspawn --network-bridge creates a virtual ethernet in the container
-          # attached to the host bridge. The interface name varies by systemd
-          # version (host0 in older versions, eth0 in systemd 258+). Using
-          # networking.useDHCP = true handles either name automatically.
+          # nspawn --network-bridge creates a virtual ethernet named eth0 in
+          # the container (vb-<name> on the host side, joined to br-vox).
+          # networking.interfaces.<name>.useDHCP is independent of the global
+          # networking.useDHCP (which nixos-containers.nix sets to false), so
+          # there is no conflict — no mkForce needed.
           # This provides internet access so Tailscale can enroll.
           (
             { ... }:
             {
-              networking.useDHCP = true;
+              networking.interfaces.eth0.useDHCP = true;
             }
           )
         ]
