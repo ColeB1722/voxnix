@@ -125,8 +125,12 @@ in
 builtins.deepSeq resolvedModules {
   containers.${validSpec.name} = {
     # All containers use private networking — see architecture.md § Networking Model.
-    # Inter-container communication goes through the shared bridge.
+    # hostBridge connects the container to br-vox (the shared outbound bridge),
+    # which provides internet access via the host's NAT/masquerade so Tailscale
+    # can enroll and outbound connections work. Without this, privateNetwork=true
+    # gives the container a fully isolated network namespace with no routes.
     privateNetwork = true;
+    hostBridge = "br-vox";
     autoStart = true;
 
     # Workspace bind mount (empty attrset when no workspace configured).
@@ -147,6 +151,17 @@ builtins.deepSeq resolvedModules {
       {
         imports = [
           baseConfig
+          # Bridge networking — get IP from dnsmasq on br-vox via DHCP.
+          # The host0 interface is the container side of the bridge connection
+          # created by nspawn --network-bridge. Without this, the container has
+          # no IP address on the bridge and cannot reach the internet.
+          (
+            { ... }:
+            {
+              networking.useDHCP = false;
+              networking.interfaces.host0.useDHCP = true;
+            }
+          )
         ]
         ++ (if hasTailscaleKey then [ tailscaleConfig ] else [ ])
         ++ resolvedModules;

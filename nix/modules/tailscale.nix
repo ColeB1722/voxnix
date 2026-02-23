@@ -54,7 +54,7 @@
   systemd.services.tailscale-autoconnect = {
     description = "Automatic Tailscale enrollment for voxnix container";
     after = [
-      "network-pre.target"
+      "network.target"
       "tailscaled.service"
     ];
     wants = [ "tailscaled.service" ];
