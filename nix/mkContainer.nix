@@ -152,14 +152,15 @@ builtins.deepSeq resolvedModules {
         imports = [
           baseConfig
           # Bridge networking — get IP from dnsmasq on br-vox via DHCP.
-          # The host0 interface is the container side of the bridge connection
-          # created by nspawn --network-bridge. Without this, the container has
-          # no IP address on the bridge and cannot reach the internet.
+          # nspawn --network-bridge creates a virtual ethernet in the container
+          # attached to the host bridge. The interface name varies by systemd
+          # version (host0 in older versions, eth0 in systemd 258+). Using
+          # networking.useDHCP = true handles either name automatically.
+          # This provides internet access so Tailscale can enroll.
           (
             { ... }:
             {
-              networking.useDHCP = false;
-              networking.interfaces.host0.useDHCP = true;
+              networking.useDHCP = true;
             }
           )
         ]
