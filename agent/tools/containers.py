@@ -141,17 +141,31 @@ async def create_container(
                 message=f"Container '{spec.name}' created and started.",
             )
 
-        # ── Container creation failed — clean up the orphaned ZFS dataset ──
-        logfire.warn(
-            "Container creation failed for '{container_name}', cleaning up ZFS dataset",
-            container_name=spec.name,
-        )
-        cleanup = await destroy_container_dataset(spec.owner, spec.name)
-        if not cleanup.success:
-            logger.error(
-                "Failed to clean up orphaned ZFS dataset for %s: %s",
-                spec.name,
-                cleanup.error,
+        # ── Container creation failed ──────────────────────────────────────
+        # Only clean up the ZFS dataset if the container was never installed.
+        # extra-container prints "Installing containers:\n<name>" to stdout on
+        # successful install before calling `systemctl start`. If the install
+        # succeeded but the start failed, the container conf is in
+        # /etc/nixos-containers/ and needs the workspace dataset to exist —
+        # destroying it here would make the container unbootable.
+        install_succeeded = "Installing containers:" in (result.stdout or "")
+        if not install_succeeded:
+            logfire.warn(
+                "Container build/install failed for '{container_name}', cleaning up ZFS dataset",
+                container_name=spec.name,
+            )
+            cleanup = await destroy_container_dataset(spec.owner, spec.name)
+            if not cleanup.success:
+                logger.error(
+                    "Failed to clean up orphaned ZFS dataset for %s: %s",
+                    spec.name,
+                    cleanup.error,
+                )
+        else:
+            logfire.warn(
+                "Container '{container_name}' installed but failed to start — "
+                "preserving ZFS dataset so container can be started manually",
+                container_name=spec.name,
             )
 
         logfire.error(

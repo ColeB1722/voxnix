@@ -306,8 +306,8 @@ class TestCreateContainer:
         assert captured_spec is not None
         assert captured_spec.workspace_path == MOUNT_PATH
 
-    async def test_failed_container_creation_cleans_up_zfs(self):
-        """When extra-container fails, the orphaned ZFS dataset is destroyed."""
+    async def test_build_failure_cleans_up_zfs(self):
+        """When extra-container fails with no stdout (build failed), ZFS dataset is destroyed."""
         mock_zfs_destroy = AsyncMock(return_value=zfs_destroy_ok())
 
         with (
@@ -318,7 +318,10 @@ class TestCreateContainer:
             patch("agent.tools.containers.generate_container_expr", return_value="..."),
             patch(
                 "agent.tools.containers.run_command",
-                AsyncMock(return_value=fail("build failed")),
+                # No "Installing containers:" in stdout — pure build failure
+                AsyncMock(
+                    return_value=CommandResult(stdout="", stderr="build failed", returncode=1)
+                ),
             ),
             patch("agent.tools.containers.destroy_container_dataset", mock_zfs_destroy),
         ):
@@ -327,8 +330,46 @@ class TestCreateContainer:
         assert result.success is False
         mock_zfs_destroy.assert_called_once_with(OWNER, CONTAINER_NAME)
 
-    async def test_failed_container_creation_zfs_cleanup_failure_logged(self, caplog):
-        """ZFS cleanup failure after container failure is logged but doesn't change result."""
+    async def test_start_failure_preserves_zfs_dataset(self):
+        """When install succeeds but start fails, ZFS dataset is NOT destroyed.
+
+        extra-container prints 'Installing containers:' before attempting to start.
+        If start fails after install, the container conf is in /etc/nixos-containers/
+        and still needs the workspace dataset to exist.
+        """
+        mock_zfs_destroy = AsyncMock(return_value=zfs_destroy_ok())
+
+        with (
+            patch(
+                "agent.tools.containers.create_container_dataset",
+                AsyncMock(return_value=zfs_ok()),
+            ),
+            patch("agent.tools.containers.generate_container_expr", return_value="..."),
+            patch(
+                "agent.tools.containers.run_command",
+                # stdout contains "Installing containers:" — install succeeded, start failed
+                AsyncMock(
+                    return_value=CommandResult(
+                        stdout=(
+                            "Installing containers:\ndev\n\n"
+                            "Starting containers:\ndev\n\n"
+                            "Error at extra-container:900"
+                        ),
+                        stderr="",
+                        returncode=1,
+                    )
+                ),
+            ),
+            patch("agent.tools.containers.destroy_container_dataset", mock_zfs_destroy),
+        ):
+            result = await create_container(TEST_SPEC, flake_path=FLAKE_PATH)
+
+        assert result.success is False
+        # Dataset must NOT be destroyed — container conf is installed and needs it
+        mock_zfs_destroy.assert_not_called()
+
+    async def test_build_failure_zfs_cleanup_failure_logged(self, caplog):
+        """ZFS cleanup failure after a build failure is logged but doesn't change result."""
         with (
             caplog.at_level(logging.ERROR, logger="agent.tools.containers"),
             patch(
@@ -338,7 +379,9 @@ class TestCreateContainer:
             patch("agent.tools.containers.generate_container_expr", return_value="..."),
             patch(
                 "agent.tools.containers.run_command",
-                AsyncMock(return_value=fail("build failed")),
+                AsyncMock(
+                    return_value=CommandResult(stdout="", stderr="build failed", returncode=1)
+                ),
             ),
             patch(
                 "agent.tools.containers.destroy_container_dataset",
