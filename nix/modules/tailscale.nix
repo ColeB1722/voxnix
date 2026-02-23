@@ -76,8 +76,13 @@
         source /etc/set-environment
       fi
 
-      # Wait for tailscaled socket to be ready.
-      sleep 2
+      # Wait for tailscaled socket to be ready (poll up to 30s).
+      for i in $(seq 1 30); do
+        if ${pkgs.tailscale}/bin/tailscale status >/dev/null 2>&1; then
+          break
+        fi
+        sleep 1
+      done
 
       # Check if already connected — exit early if so (idempotent on restart).
       # tailscaled reconnects automatically on subsequent boots; we only need

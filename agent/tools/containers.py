@@ -150,7 +150,7 @@ async def create_container(
         # destroying it here would make the container unbootable.
         install_succeeded = "Installing containers:" in (result.stdout or "")
         if not install_succeeded:
-            logfire.warn(
+            logfire.warning(
                 "Container build/install failed for '{container_name}', cleaning up ZFS dataset",
                 container_name=spec.name,
             )
@@ -162,7 +162,7 @@ async def create_container(
                     cleanup.error,
                 )
         else:
-            logfire.warn(
+            logfire.warning(
                 "Container '{container_name}' installed but failed to start — "
                 "preserving ZFS dataset so container can be started manually",
                 container_name=spec.name,

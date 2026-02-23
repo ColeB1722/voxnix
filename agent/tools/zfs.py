@@ -167,7 +167,15 @@ async def create_user_datasets(owner: str) -> ZfsResult:
             # Always set mountpoint — fixes datasets created with 'legacy' mountpoint
             # by prior runs (before this fix). Idempotent if already correct.
             mount_path = f"/tank/users/{owner}"
-            await run_command("zfs", "set", f"mountpoint={mount_path}", dataset, timeout_seconds=10)
+            mp_result = await run_command(
+                "zfs", "set", f"mountpoint={mount_path}", dataset, timeout_seconds=10
+            )
+            if not mp_result.success:
+                logger.warning(
+                    "Failed to set mountpoint for existing user dataset %s: %s",
+                    dataset,
+                    mp_result.stderr,
+                )
             # Always apply quota — keeps it in sync with config changes.
             quota_result = await _apply_quota(dataset, quota)
             if not quota_result.success:
@@ -282,9 +290,15 @@ async def create_container_dataset(owner: str, container_name: str) -> ZfsResult
                 dataset=workspace_ds,
             )
             # Always set mountpoint — fixes datasets created with 'legacy' mountpoint.
-            await run_command(
+            mp_result = await run_command(
                 "zfs", "set", f"mountpoint={mount_path}", workspace_ds, timeout_seconds=10
             )
+            if not mp_result.success:
+                logger.warning(
+                    "Failed to set mountpoint for existing workspace dataset %s: %s",
+                    workspace_ds,
+                    mp_result.stderr,
+                )
             return ZfsResult(
                 success=True,
                 dataset=workspace_ds,
@@ -311,7 +325,7 @@ async def create_container_dataset(owner: str, container_name: str) -> ZfsResult
             "zfs", "list", "-H", "-o", "name", containers_ds, timeout_seconds=10
         )
         if not containers_check.success:
-            await run_command(
+            containers_result = await run_command(
                 "zfs",
                 "create",
                 "-o",
@@ -319,13 +333,20 @@ async def create_container_dataset(owner: str, container_name: str) -> ZfsResult
                 containers_ds,
                 timeout_seconds=30,
             )
+            if not containers_result.success:
+                return ZfsResult(
+                    success=False,
+                    dataset=workspace_ds,
+                    message=f"Failed to create intermediate dataset '{containers_ds}'.",
+                    error=containers_result.stderr or containers_result.stdout,
+                )
 
         # Intermediate: containers/<name>/ dataset
         container_check = await run_command(
             "zfs", "list", "-H", "-o", "name", container_ds, timeout_seconds=10
         )
         if not container_check.success:
-            await run_command(
+            container_result = await run_command(
                 "zfs",
                 "create",
                 "-o",
@@ -333,6 +354,13 @@ async def create_container_dataset(owner: str, container_name: str) -> ZfsResult
                 container_ds,
                 timeout_seconds=30,
             )
+            if not container_result.success:
+                return ZfsResult(
+                    success=False,
+                    dataset=workspace_ds,
+                    message=f"Failed to create intermediate dataset '{container_ds}'.",
+                    error=container_result.stderr or container_result.stdout,
+                )
 
         # Leaf: containers/<name>/workspace dataset
         result = await run_command(

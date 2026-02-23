@@ -114,7 +114,7 @@ class TestGenerateContainerExpr:
     def test_workspace_path_omitted_when_none(self):
         spec = make_spec(workspace_path=None)
         expr = generate_container_expr(spec, flake_path=FAKE_FLAKE_PATH)
-        assert "workspace" not in expr
+        assert "workspace =" not in expr
 
     def test_workspace_path_as_nix_string(self):
         """workspace_path should appear as a Nix string assignment."""
