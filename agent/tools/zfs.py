@@ -164,6 +164,10 @@ async def create_user_datasets(owner: str) -> ZfsResult:
                 "User dataset '{dataset}' already exists",
                 dataset=dataset,
             )
+            # Always set mountpoint — fixes datasets created with 'legacy' mountpoint
+            # by prior runs (before this fix). Idempotent if already correct.
+            mount_path = f"/tank/users/{owner}"
+            await run_command("zfs", "set", f"mountpoint={mount_path}", dataset, timeout_seconds=10)
             # Always apply quota — keeps it in sync with config changes.
             quota_result = await _apply_quota(dataset, quota)
             if not quota_result.success:
@@ -177,11 +181,16 @@ async def create_user_datasets(owner: str) -> ZfsResult:
                 message=f"User dataset '{dataset}' already exists (quota: {quota}).",
             )
 
-        # Dataset doesn't exist — create it.
+        # Dataset doesn't exist — create it with an explicit mountpoint so it
+        # appears as a real directory on the host filesystem. Without this,
+        # child datasets inherit the parent's 'legacy' mountpoint and are never
+        # auto-mounted, which means the directory doesn't exist for nspawn bind mounts.
+        mount_path = f"/tank/users/{owner}"
         result = await run_command(
             "zfs",
             "create",
-            "-p",
+            "-o",
+            f"mountpoint={mount_path}",
             dataset,
             timeout_seconds=30,
         )
@@ -272,6 +281,10 @@ async def create_container_dataset(owner: str, container_name: str) -> ZfsResult
                 "Container dataset '{dataset}' already exists",
                 dataset=workspace_ds,
             )
+            # Always set mountpoint — fixes datasets created with 'legacy' mountpoint.
+            await run_command(
+                "zfs", "set", f"mountpoint={mount_path}", workspace_ds, timeout_seconds=10
+            )
             return ZfsResult(
                 success=True,
                 dataset=workspace_ds,
@@ -279,11 +292,54 @@ async def create_container_dataset(owner: str, container_name: str) -> ZfsResult
                 mount_path=mount_path,
             )
 
-        # Create the full hierarchy with -p.
+        # Create the full dataset hierarchy with explicit mountpoints at each level.
+        # Each dataset must have a concrete mountpoint (not 'legacy') so it appears
+        # as a real directory on the host filesystem — nspawn bind mounts require the
+        # host path to exist as a directory before the container starts.
+        #
+        # Hierarchy (all under tank/users/<owner>/):
+        #   containers/                       → /tank/users/<owner>/containers
+        #   containers/<name>/                → /tank/users/<owner>/containers/<name>
+        #   containers/<name>/workspace       → /tank/users/<owner>/containers/<name>/workspace
+        containers_ds = f"{_USERS_ROOT}/{owner}/containers"
+        containers_path = f"/tank/users/{owner}/containers"
+        container_ds = _container_dataset(owner, container_name)
+        container_root = f"/tank/users/{owner}/containers/{container_name}"
+
+        # Intermediate: containers/ dataset
+        containers_check = await run_command(
+            "zfs", "list", "-H", "-o", "name", containers_ds, timeout_seconds=10
+        )
+        if not containers_check.success:
+            await run_command(
+                "zfs",
+                "create",
+                "-o",
+                f"mountpoint={containers_path}",
+                containers_ds,
+                timeout_seconds=30,
+            )
+
+        # Intermediate: containers/<name>/ dataset
+        container_check = await run_command(
+            "zfs", "list", "-H", "-o", "name", container_ds, timeout_seconds=10
+        )
+        if not container_check.success:
+            await run_command(
+                "zfs",
+                "create",
+                "-o",
+                f"mountpoint={container_root}",
+                container_ds,
+                timeout_seconds=30,
+            )
+
+        # Leaf: containers/<name>/workspace dataset
         result = await run_command(
             "zfs",
             "create",
-            "-p",
+            "-o",
+            f"mountpoint={mount_path}",
             workspace_ds,
             timeout_seconds=30,
         )
