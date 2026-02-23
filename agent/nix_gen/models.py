@@ -7,6 +7,11 @@ The validation rules here mirror the constraints in mkContainer.nix:
 - name: lowercase alphanumeric + hyphens, no leading/trailing hyphens
 - owner: non-empty string (Telegram chat_id)
 - modules: non-empty list of unique module name strings
+
+The standalone validate_container_name() function is exported for use by
+agent tools that accept a container name argument outside of ContainerSpec
+(e.g. destroy, start, stop). This avoids duplicating the regex and length
+checks across multiple call sites.
 """
 
 from __future__ import annotations
@@ -26,6 +31,35 @@ _CONTAINER_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 # "ve-" prefix = 3 chars, leaving 12 for the name — but NixOS enforces 11.
 # See: https://github.com/NixOS/nixpkgs/issues/38509
 _CONTAINER_NAME_MAX_LEN = 11
+
+
+def validate_container_name(name: str) -> str | None:
+    """Validate a container name outside of ContainerSpec.
+
+    Returns an error message string if the name is invalid, or None if valid.
+    Uses the same rules as ContainerSpec.validate_name — this is the shared
+    entry point so validation logic is never duplicated.
+
+    Args:
+        name: Container name to validate.
+
+    Returns:
+        Error message string, or None if the name is valid.
+    """
+    if not name:
+        return "Container name must not be empty."
+    if not _CONTAINER_NAME_RE.match(name):
+        return (
+            f"Container name '{name}' is invalid. "
+            "Must be lowercase alphanumeric with hyphens, "
+            "no leading/trailing hyphens (e.g. 'my-dev')."
+        )
+    if len(name) > _CONTAINER_NAME_MAX_LEN:
+        return (
+            f"Container name '{name}' is too long ({len(name)} chars). "
+            f"Must be {_CONTAINER_NAME_MAX_LEN} characters or fewer."
+        )
+    return None
 
 
 class ContainerSpec(BaseModel):

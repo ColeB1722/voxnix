@@ -169,6 +169,13 @@ async def destroy_container(name: str) -> ContainerResult:
             stdout=result.stdout,
             returncode=result.returncode,
         )
+        logger.error(
+            "destroy_container failed: name=%s returncode=%d stderr=%r stdout=%r",
+            name,
+            result.returncode,
+            result.stderr,
+            result.stdout,
+        )
         return ContainerResult(
             success=False,
             name=name,
@@ -206,6 +213,13 @@ async def start_container(name: str) -> ContainerResult:
             stdout=result.stdout,
             returncode=result.returncode,
         )
+        logger.error(
+            "start_container failed: name=%s returncode=%d stderr=%r stdout=%r",
+            name,
+            result.returncode,
+            result.stderr,
+            result.stdout,
+        )
         return ContainerResult(
             success=False,
             name=name,
@@ -242,6 +256,13 @@ async def stop_container(name: str) -> ContainerResult:
             stderr=result.stderr,
             stdout=result.stdout,
             returncode=result.returncode,
+        )
+        logger.error(
+            "stop_container failed: name=%s returncode=%d stderr=%r stdout=%r",
+            name,
+            result.returncode,
+            result.stderr,
+            result.stdout,
         )
         return ContainerResult(
             success=False,

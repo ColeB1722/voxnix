@@ -4,6 +4,7 @@ TDD — these tests define the contract for container management operations.
 All CLI calls are mocked; no real NixOS host is required to run these tests.
 """
 
+import logging
 from unittest.mock import AsyncMock, patch
 
 from agent.nix_gen.models import ContainerSpec
@@ -174,6 +175,19 @@ class TestDestroyContainer:
         assert result.error is not None
         assert "not known" in result.error
 
+    async def test_failure_logs_to_logger(self, caplog):
+        with (
+            caplog.at_level(logging.ERROR, logger="agent.tools.containers"),
+            patch(
+                "agent.tools.containers.run_command",
+                AsyncMock(return_value=fail("destroy error")),
+            ),
+        ):
+            await destroy_container("test-dev")
+
+        assert any("destroy_container failed" in r.message for r in caplog.records)
+        assert any("test-dev" in r.message for r in caplog.records)
+
     async def test_success_message_includes_name(self):
         with patch("agent.tools.containers.run_command", AsyncMock(return_value=ok())):
             result = await destroy_container("test-dev")
@@ -212,6 +226,19 @@ class TestStartContainer:
 
         assert result.success is False
         assert result.error is not None
+
+    async def test_failure_logs_to_logger(self, caplog):
+        with (
+            caplog.at_level(logging.ERROR, logger="agent.tools.containers"),
+            patch(
+                "agent.tools.containers.run_command",
+                AsyncMock(return_value=fail("start error")),
+            ),
+        ):
+            await start_container("test-dev")
+
+        assert any("start_container failed" in r.message for r in caplog.records)
+        assert any("test-dev" in r.message for r in caplog.records)
 
     async def test_already_running_is_failure(self):
         """Starting an already-running container should surface the error."""
@@ -255,6 +282,19 @@ class TestStopContainer:
 
         assert result.success is False
         assert result.error is not None
+
+    async def test_failure_logs_to_logger(self, caplog):
+        with (
+            caplog.at_level(logging.ERROR, logger="agent.tools.containers"),
+            patch(
+                "agent.tools.containers.run_command",
+                AsyncMock(return_value=fail("stop error")),
+            ),
+        ):
+            await stop_container("test-dev")
+
+        assert any("stop_container failed" in r.message for r in caplog.records)
+        assert any("test-dev" in r.message for r in caplog.records)
 
     async def test_success_message_includes_name(self):
         with patch("agent.tools.containers.run_command", AsyncMock(return_value=ok())):

@@ -2,6 +2,10 @@
 
 TDD — these tests define the contract for the agent-to-Nix boundary.
 The ContainerSpec model must produce JSON that mkContainer.nix can consume.
+
+Also tests the standalone validate_container_name() function, which is
+used by agent tools (destroy, start, stop) that accept a name argument
+outside of ContainerSpec.
 """
 
 import json
@@ -9,7 +13,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from agent.nix_gen.models import ContainerSpec
+from agent.nix_gen.models import ContainerSpec, validate_container_name
 
 
 class TestContainerSpecValid:
@@ -145,3 +149,67 @@ class TestContainerSpecSerialization:
         data = json.loads(spec.model_dump_json())
         expected_keys = {"name", "owner", "modules"}
         assert set(data.keys()) == expected_keys
+
+
+# ── validate_container_name (standalone) ──────────────────────────────────────
+
+
+class TestValidateContainerName:
+    """Standalone validator used by destroy/start/stop tools."""
+
+    def test_valid_name_returns_none(self):
+        assert validate_container_name("dev-abc") is None
+
+    def test_valid_short_name(self):
+        assert validate_container_name("dev") is None
+
+    def test_valid_max_length(self):
+        assert validate_container_name("abcde-fghij") is None
+
+    def test_valid_numeric(self):
+        assert validate_container_name("abc123") is None
+
+    def test_empty_name_returns_error(self):
+        error = validate_container_name("")
+        assert error is not None
+        assert "empty" in error.lower()
+
+    def test_too_long_returns_error(self):
+        error = validate_container_name("my-dev-container")
+        assert error is not None
+        assert "too long" in error.lower()
+
+    def test_uppercase_returns_error(self):
+        error = validate_container_name("MyDev")
+        assert error is not None
+        assert "invalid" in error.lower()
+
+    def test_leading_hyphen_returns_error(self):
+        error = validate_container_name("-bad")
+        assert error is not None
+        assert "invalid" in error.lower()
+
+    def test_trailing_hyphen_returns_error(self):
+        error = validate_container_name("bad-")
+        assert error is not None
+        assert "invalid" in error.lower()
+
+    def test_special_characters_returns_error(self):
+        error = validate_container_name("bad@name!")
+        assert error is not None
+        assert "invalid" in error.lower()
+
+    def test_spaces_returns_error(self):
+        error = validate_container_name("my dev")
+        assert error is not None
+        assert "invalid" in error.lower()
+
+    def test_dots_returns_error(self):
+        error = validate_container_name("bad.name")
+        assert error is not None
+        assert "invalid" in error.lower()
+
+    def test_exactly_12_chars_returns_error(self):
+        error = validate_container_name("abcde-fghijk")
+        assert error is not None
+        assert "too long" in error.lower()

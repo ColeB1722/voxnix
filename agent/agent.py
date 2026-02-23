@@ -29,7 +29,7 @@ from pydantic_ai import Agent, RunContext
 
 from agent.config import get_settings
 from agent.nix_gen.discovery import discover_modules
-from agent.nix_gen.models import ContainerSpec
+from agent.nix_gen.models import ContainerSpec, validate_container_name
 from agent.tools.containers import (
     ContainerResult,
     create_container,
@@ -127,6 +127,9 @@ Available workload modules: {modules_str}
 
 Guidelines:
 - Be concise. Users get brief status updates, not walls of text.
+- Do not use Markdown formatting in responses. Respond in plain text only.
+  Telegram does not render Markdown — raw markers like **bold** and `backticks` appear as-is.
+  Use plain dashes for lists, plain text for emphasis, and spell out code references naturally.
 - Containers are ephemeral by design — only ZFS-backed workspaces persist across restarts.
 - Container names must be 11 characters or fewer (network interface name limit). Choose short names.
 - Destroy containers immediately when explicitly requested — do not ask for confirmation first.
@@ -183,6 +186,9 @@ async def tool_destroy_container(
     Returns:
         A plain-language summary of the result for the user.
     """
+    if name_error := validate_container_name(name):
+        return f"❌ {name_error}"
+
     if denied := await _check_ownership(name, ctx.deps.owner):
         return denied
 
@@ -207,6 +213,9 @@ async def tool_start_container(
     Returns:
         A plain-language summary of the result for the user.
     """
+    if name_error := validate_container_name(name):
+        return f"❌ {name_error}"
+
     if denied := await _check_ownership(name, ctx.deps.owner):
         return denied
 
@@ -231,6 +240,9 @@ async def tool_stop_container(
     Returns:
         A plain-language summary of the result for the user.
     """
+    if name_error := validate_container_name(name):
+        return f"❌ {name_error}"
+
     if denied := await _check_ownership(name, ctx.deps.owner):
         return denied
 
