@@ -15,7 +15,7 @@ You are working on **voxnix** — an agentic NixOS container orchestrator. A Tel
 
 **Appliance:** `192.168.8.146` (Hyper-V Gen 2 VM, 16GB RAM)
 **Agent service:** active, Telegram bot responding
-**Current branch:** `main` — PR #56 merged, branch deleted
+**Current branch:** `feat/zfs-pool-config-and-tailscale-cleanup` — not yet merged (PR open, awaiting CodeRabbit)
 **Last known good container:** `dev` running, Tailscale enrolled at `100.83.13.65` (this IP changes on re-enrollment)
 
 ---
@@ -69,7 +69,23 @@ All 6 MVP build steps from `docs/architecture.md` are implemented and verified. 
 - `hostBridge = "br-vox"` in `mkContainer.nix` with `networking.interfaces.eth0.useDHCP = true`
 - Polling loop replaces `sleep 2` in `tailscale-autoconnect`
 
-### This session — code quality and bug fixes
+### This session — ZFS pool config (#68) and Tailscale logout on destroy (#60)
+
+- **#68 — ZFS pool name as config:**
+  - Added `zfs_pool: str = "tank"` field to `VoxnixSettings` in `agent/config.py` (env var `ZFS_POOL`)
+  - Replaced module-level `_POOL`/`_USERS_ROOT`/`_MOUNT_ROOT` constants in `agent/tools/zfs.py` with lazy helper functions `_pool()`/`_users_root()`/`_mount_root()` that call `get_settings()` at call time — allows pool rename via env var without code changes
+  - Injected `ZFS_POOL = "tank"` into agent service environment in `nix/host/agent-service.nix` — Nix config is now single source of truth for pool name
+  - Updated `_mock_settings()` in `test_zfs.py` to include `zfs_pool` so path helper tests work through the mock
+  - Fixed two hardcoded string assertions in `TestPathHelpers` to use `DEFAULT_POOL` constant
+
+- **#60 — Tailscale cleanup on destroy + `--reset`:**
+  - Added `_tailscale_logout()` helper in `agent/tools/containers.py` — runs `nixos-container run <name> -- tailscale logout` before `extra-container destroy`, cleanly removing the node from the tailnet (prevents ghost entries accumulating on repeated create/destroy)
+  - Logout is best-effort: failure (container stopped, no Tailscale, control plane unreachable) is logged at debug/info level and does NOT abort the destroy
+  - Added `--reset` flag to `tailscale up` in `nix/modules/tailscale.nix` — ensures clean re-enrollment when an auth key is rotated or a container is recreated with the same name
+  - Added `_cmd_dispatch()` helper to `test_containers.py` for command-name-based dispatch (avoids fragile ordered `side_effect` sequences per #74)
+  - Added 3 new tests: logout is called, logout failure doesn't abort destroy, logout failure not logged as error
+
+### Previous session — code quality and bug fixes
 - **Quota failure bug:** `create_user_datasets` was returning `success=True` even when quota application failed — now correctly returns `success=False` in both branches (existing dataset and new dataset)
 - **ZFS refactor:** Extracted `_ensure_dataset(dataset, mountpoint)` helper — replaces the manual check-then-create pattern repeated 3× in `create_container_dataset`. ~80 lines → ~15 lines.
 - **`_user_mount_path(owner)`** helper added to complete the path helper family
@@ -80,7 +96,7 @@ All 6 MVP build steps from `docs/architecture.md` are implemented and verified. 
   - `mkContainer.nix` `hasWorkspace`: added non-empty string guard (`!= ""`) consistent with `hasTailscaleKey`
   - `create_container_dataset` docstring: removed stale `-p` flag reference
 
-### This session — new issues filed
+### Previous session — new issues filed
 - **#67** — Decouple Telegram bot from agent via A2A protocol (`agent.to_a2a()` / fasta2a)
 - **#68** — Surface ZFS pool name as config (`VoxnixSettings.zfs_pool`) rather than hardcoded constant
 - **#69** — opencode session-aware PR triage via opencode server + Tailscale
@@ -92,7 +108,7 @@ All 6 MVP build steps from `docs/architecture.md` are implemented and verified. 
 
 ---
 
-## Architecture decisions made this session
+## Architecture decisions made this session (previous session)
 
 ### A2A modularization (#67)
 Decouple Telegram bot (thin A2A client) from the container agent (A2A server via `agent.to_a2a()`). The Telegram layer becomes provider-agnostic — any A2A-compliant agent can be plugged in. PydanticAI supports this natively via `fasta2a`. `contextId` in A2A maps to `chat_id`, giving conversation history (#48) partially for free.
@@ -108,17 +124,11 @@ Telegram voice messages arrive as OGG/Opus on `update.effective_message.voice`. 
 
 ---
 
-## Known issue: stale Tailscale nodes on destroy/recreate
+## Known issue: stale Tailscale nodes on destroy/recreate — FIXED (#60)
 
-When a container is destroyed and recreated with the same name, the old Tailscale node is NOT cleaned up. Each creation adds a new ghost entry in the Tailscale admin console.
+~~When a container is destroyed and recreated with the same name, the old Tailscale node is NOT cleaned up. Each creation adds a new ghost entry in the Tailscale admin console.~~
 
-**Fix (not yet implemented):** call `tailscale logout` inside the container before `extra-container destroy` tears it down. In `destroy_container` in `agent/tools/containers.py`:
-
-```python
-await run_command("nixos-container", "run", name, "--", "tailscale", "logout")
-```
-
-Tracked as #60.
+**Fixed in this session (#60):** `_tailscale_logout()` in `agent/tools/containers.py` now runs `nixos-container run <name> -- tailscale logout` before every `extra-container destroy`. The logout is best-effort — it will silently skip (logged at debug) if the container is stopped or not enrolled. The `--reset` flag was also added to `tailscale up` in `tailscale.nix` to handle auth key rotation cleanly.
 
 ---
 
@@ -144,28 +154,29 @@ Tagged devices (`tag:shared`) have **key expiry disabled by default** in Tailsca
 
 ## What to work on next (priority order)
 
-### 1. Stale Tailscale node cleanup (#60) — 1 session, unblocked
-Add `tailscale logout` before destroy in `agent/tools/containers.py`. Fixes ghost nodes accumulating in the tailnet on repeated create/destroy. Also tracked: `--reset` flag for auth key rotation.
+### 1. Merge PR `feat/zfs-pool-config-and-tailscale-cleanup` — unblocked
+Run CodeRabbit, triage findings, merge. Closes #60 and #68.
 
-### 2. ZFS pool name as config (#68) — 1 session, unblocked
-Promote `_POOL` to `VoxnixSettings.zfs_pool` (env var `ZFS_POOL`). Inject from `nix/host/agent-service.nix`. Fix all hardcoded `"tank"` strings in tests to import from the constant. Small but important before multi-user work begins.
+```
+coderabbit review --type committed --base main --plain
+```
 
-### 3. Conversation history + session context (#48) — High
+### 2. Conversation history + session context (#48) — High
 Agent has no memory within a conversation. Each message is stateless. Consider doing #67 (A2A) first — A2A `contextId` gives per-user conversation continuity partially for free via the storage layer.
 
-### 4. A2A modularization (#67) — Architectural, 2-3 sessions
+### 3. A2A modularization (#67) — Architectural, 2-3 sessions
 Decouple Telegram bot from the agent via fasta2a. `agent.to_a2a()` exposes the container agent as an A2A server. Telegram becomes a thin A2A client. Prerequisite for multi-agent routing (#66, #29).
 
-### 5. Diagnostic tools for the agent (#47) — High
+### 4. Diagnostic tools for the agent (#47) — High
 Agent can't self-diagnose. `journalctl -M <name>`, `tailscale status`, `machinectl list` etc. as agent tools. High value — would have saved significant debugging time during deployment.
 
-### 6. Container query tool (#54) — High
+### 5. Container query tool (#54) — High
 Users can create/destroy/start/stop but `list_workloads` exists (`tool_list_workloads`). Issue #54 is about *deeper* metadata — "tell me about the dev container" (modules, status, Tailscale IP, storage usage). `list_workloads` covers basic listing; #54 covers per-container detail.
 
-### 7. Host Tailscale (#17) — Medium
+### 6. Host Tailscale (#17) — Medium
 Add `services.tailscale.enable = true` to host NixOS config. Enables out-of-LAN `just deploy` and SSH break-glass. Orthogonal to container Tailscale (#72).
 
-### 8. GitHub Deployment Action (#53) — Medium
+### 7. GitHub Deployment Action (#53) — Medium
 Deploy on merge to main via GitHub Actions. Removes local-machine LAN dependency.
 
 ---
@@ -174,13 +185,14 @@ Deploy on merge to main via GitHub Actions. Removes local-machine LAN dependency
 
 | # | Title | Priority |
 |---|-------|----------|
-| #74 | Brittle ordered AsyncMock sequences in test_zfs.py | Low |
+| #75 | Notifications / global agent formation | Low/idea |
+| #74 | Brittle ordered AsyncMock sequences in test_zfs.py | Low (partially addressed: _cmd_dispatch added) |
 | #73 | Document install-detection heuristic fragility | Low |
 | #72 | Tiered Tailscale connectivity model | Medium |
 | #71 | Module self-description | Medium |
 | #70 | Voice message support | Medium |
 | #69 | opencode session-aware PR triage | Low/idea |
-| #68 | Surface ZFS pool name as config | Medium |
+| #68 | Surface ZFS pool name as config | **Done — pending merge** |
 | #67 | A2A modularization (Telegram ↔ agent) | High |
 | #66 | opencode Telegram wrapper | Low |
 | #65 | Git worktree support | Low |
@@ -188,7 +200,7 @@ Deploy on merge to main via GitHub Actions. Removes local-machine LAN dependency
 | #63 | iOS/Android native app | Low/idea |
 | #62 | TTL-based multi-turn conversation | Medium |
 | #61 | Zero trust auth layer for Telegram | Medium |
-| #60 | Stale Tailscale node cleanup + --reset flag | High |
+| #60 | Stale Tailscale node cleanup + --reset flag | **Done — pending merge** |
 | #59 | Use spec.model_copy() to avoid mutating ContainerSpec | Low |
 | #58 | Add Pydantic validator for zfs_user_quota format | Low |
 | #57 | Consolidate validate_container_name into ContainerSpec | Low |
@@ -273,10 +285,10 @@ ssh admin@192.168.8.146 "sudo iptables -t nat -L nixos-nat-pre -n -v | grep br-v
 ## ZFS constant reference
 
 ```python
-# agent/tools/zfs.py
-_POOL = "tank"           # → must match pool name in nix/host/storage.nix
-_USERS_ROOT = f"{_POOL}/users"        # dataset paths: tank/users/...
-_MOUNT_ROOT = f"/{_USERS_ROOT}"       # mount paths:  /tank/users/...
+# agent/tools/zfs.py — pool name now comes from VoxnixSettings (#68 fixed)
+# _pool()        → get_settings().zfs_pool   (env var ZFS_POOL, default "tank")
+# _users_root()  → f"{_pool()}/users"        # dataset paths: tank/users/...
+# _mount_root()  → f"/{_users_root()}"       # mount paths:  /tank/users/...
 ```
 
-Changing the pool name requires updating `_POOL` here AND `nix/host/storage.nix`. Tracked as #68 — this should become a `VoxnixSettings.zfs_pool` env var so the Nix config is the single source of truth.
+Pool name is now driven by the `ZFS_POOL` env var (default `"tank"`). The Nix host config (`nix/host/agent-service.nix`) injects `ZFS_POOL = "tank"` — it is the single source of truth. Changing the pool only requires updating that one line in Nix config.
