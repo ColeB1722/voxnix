@@ -179,9 +179,21 @@ async def create_user_datasets(owner: str) -> ZfsResult:
             # Always apply quota — keeps it in sync with config changes.
             quota_result = await _apply_quota(dataset, quota)
             if not quota_result.success:
+                logfire.error(
+                    "User dataset exists but quota application failed for '{dataset}'",
+                    dataset=dataset,
+                    error=quota_result.error,
+                )
                 logger.error(
-                    "User dataset exists but quota application failed: %s",
+                    "create_user_datasets: quota application failed for existing dataset %s: %s",
+                    dataset,
                     quota_result.error,
+                )
+                return ZfsResult(
+                    success=False,
+                    dataset=dataset,
+                    message=f"User dataset '{dataset}' exists but quota could not be applied.",
+                    error=quota_result.error,
                 )
             return ZfsResult(
                 success=True,
@@ -208,9 +220,21 @@ async def create_user_datasets(owner: str) -> ZfsResult:
             # Apply quota to the newly created dataset.
             quota_result = await _apply_quota(dataset, quota)
             if not quota_result.success:
+                logfire.error(
+                    "User dataset created but quota application failed for '{dataset}'",
+                    dataset=dataset,
+                    error=quota_result.error,
+                )
                 logger.error(
-                    "User dataset created but quota application failed: %s",
+                    "create_user_datasets: quota application failed for %s: %s",
+                    dataset,
                     quota_result.error,
+                )
+                return ZfsResult(
+                    success=False,
+                    dataset=dataset,
+                    message=f"User dataset '{dataset}' created but quota could not be applied.",
+                    error=quota_result.error,
                 )
             return ZfsResult(
                 success=True,

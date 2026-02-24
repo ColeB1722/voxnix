@@ -350,8 +350,8 @@ class TestCreateUserDatasets:
         quota_call = mock_run.call_args_list[2]
         assert quota_call[0] == ("zfs", "set", "quota=50G", USER_DS)
 
-    async def test_quota_failure_logged_but_success_returned(self, caplog):
-        """Quota failure is logged but dataset creation still returns success."""
+    async def test_quota_failure_on_new_dataset_returns_failure(self, caplog):
+        """Quota failure on a newly created dataset returns success=False."""
         mock_run = AsyncMock(
             side_effect=[
                 fail("not found"),  # zfs list
@@ -366,8 +366,28 @@ class TestCreateUserDatasets:
         ):
             result = await create_user_datasets(OWNER)
 
-        # Dataset was created — success. Quota failure is logged.
-        assert result.success is True
+        assert result.success is False
+        assert result.error is not None
+        assert any("quota application failed" in r.message for r in caplog.records)
+
+    async def test_quota_failure_on_existing_dataset_returns_failure(self, caplog):
+        """Quota failure on an already-existing dataset returns success=False."""
+        mock_run = AsyncMock(
+            side_effect=[
+                ok(USER_DS),  # zfs list → exists
+                ok(),  # zfs set mountpoint
+                fail("permission denied"),  # zfs set quota — fails
+            ]
+        )
+
+        with (
+            caplog.at_level(logging.ERROR, logger="agent.tools.zfs"),
+            patch("agent.tools.zfs.run_command", mock_run),
+        ):
+            result = await create_user_datasets(OWNER)
+
+        assert result.success is False
+        assert result.error is not None
         assert any("quota application failed" in r.message for r in caplog.records)
 
     async def test_quota_in_success_message(self):
