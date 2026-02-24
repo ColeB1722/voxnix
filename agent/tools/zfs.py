@@ -28,10 +28,31 @@ from agent.tools.cli import run_command
 
 logger = logging.getLogger(__name__)
 
-# ZFS pool and dataset prefix — matches the disko layout in nix/host/storage.nix.
-_POOL = "tank"
-_USERS_ROOT = f"{_POOL}/users"
-_MOUNT_ROOT = f"/{_USERS_ROOT}"
+# ZFS pool and dataset prefix — derived from VoxnixSettings at call time so the
+# pool name can be overridden via the ZFS_POOL environment variable without
+# redeploying. The Nix host config (nix/host/storage.nix) is the authoritative
+# source of truth; the Python default ("tank") is a fallback for local dev only.
+#
+# These are functions rather than module-level constants so that:
+#   1. get_settings() is called lazily (not at import time), allowing tests to
+#      mock it via the standard autouse fixture in test_zfs.py.
+#   2. A pool rename only requires changing ZFS_POOL in the env / Nix config —
+#      no Python code changes needed.
+
+
+def _pool() -> str:
+    """Return the ZFS pool name from settings (e.g. "tank")."""
+    return get_settings().zfs_pool
+
+
+def _users_root() -> str:
+    """Return the ZFS dataset path for the users root (e.g. "tank/users")."""
+    return f"{_pool()}/users"
+
+
+def _mount_root() -> str:
+    """Return the host mount path for the users root (e.g. "/tank/users")."""
+    return f"/{_users_root()}"
 
 
 @dataclass
@@ -51,31 +72,41 @@ class ZfsResult:
 
 def _user_dataset(owner: str) -> str:
     """Return the ZFS dataset path for a user's root dataset."""
-    return f"{_USERS_ROOT}/{owner}"
+    return f"{_users_root()}/{owner}"
 
 
 def _container_dataset(owner: str, container_name: str) -> str:
     """Return the ZFS dataset path for a container's root dataset."""
-    return f"{_USERS_ROOT}/{owner}/containers/{container_name}"
+    return f"{_users_root()}/{owner}/containers/{container_name}"
 
 
 def _workspace_dataset(owner: str, container_name: str) -> str:
     """Return the ZFS dataset path for a container's workspace dataset."""
-    return f"{_USERS_ROOT}/{owner}/containers/{container_name}/workspace"
+    return f"{_users_root()}/{owner}/containers/{container_name}/workspace"
+
+
+def _containers_dataset(owner: str) -> str:
+    """Return the ZFS dataset path for a user's containers root dataset."""
+    return f"{_users_root()}/{owner}/containers"
+
+
+def _containers_mount_path(owner: str) -> str:
+    """Return the host-side mount path for a user's containers root dataset."""
+    return f"{_mount_root()}/{owner}/containers"
 
 
 def _user_mount_path(owner: str) -> str:
     """Return the host-side mount path for a user's root dataset."""
-    return f"{_MOUNT_ROOT}/{owner}"
+    return f"{_mount_root()}/{owner}"
 
 
 def _workspace_mount_path(owner: str, container_name: str) -> str:
     """Return the host-side mount path for a container's workspace.
 
-    ZFS datasets under tank/users are mounted at /tank/users/... (see storage.nix).
+    ZFS datasets under <pool>/users are mounted at /<pool>/users/... (see storage.nix).
     The workspace dataset's mountpoint follows the same convention.
     """
-    return f"{_MOUNT_ROOT}/{owner}/containers/{container_name}/workspace"
+    return f"{_mount_root()}/{owner}/containers/{container_name}/workspace"
 
 
 async def _ensure_dataset(dataset: str, mountpoint: str) -> ZfsResult:
@@ -400,15 +431,15 @@ async def create_container_dataset(owner: str, container_name: str) -> ZfsResult
         #   containers/              → /tank/users/<owner>/containers
         #   containers/<name>/       → /tank/users/<owner>/containers/<name>
         #   containers/<name>/workspace  → /tank/users/<owner>/containers/<name>/workspace
-        containers_ds = f"{_USERS_ROOT}/{owner}/containers"
+        containers_ds = _containers_dataset(owner)
         container_ds = _container_dataset(owner, container_name)
 
         # Ensure intermediate datasets exist with correct mountpoints (idempotent).
         # The outer workspace check above already confirmed workspace doesn't exist,
         # so only the intermediates need the check-then-create pattern.
         intermediates = [
-            (containers_ds, f"{_MOUNT_ROOT}/{owner}/containers"),
-            (container_ds, f"{_MOUNT_ROOT}/{owner}/containers/{container_name}"),
+            (containers_ds, _containers_mount_path(owner)),
+            (container_ds, f"{_mount_root()}/{owner}/containers/{container_name}"),
         ]
         for ds, mp in intermediates:
             step_result = await _ensure_dataset(ds, mp)

@@ -110,6 +110,12 @@ in
       # updated atomically on each nixos-rebuild.
       VOXNIX_FLAKE_PATH = "${voxnix-src}";
 
+      # ZFS pool name — must match the pool defined in nix/host/storage.nix.
+      # Python reads this via VoxnixSettings.zfs_pool (env var ZFS_POOL).
+      # Defining it here keeps the Nix config as the single source of truth:
+      # if the pool is ever renamed, only this file needs updating.
+      ZFS_POOL = "tank";
+
       # uv environment configuration — use the persistent venv and cache
       # in the service's StateDirectory rather than the (read-only) store path.
       UV_PROJECT_ENVIRONMENT = venvDir;

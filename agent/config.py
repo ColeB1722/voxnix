@@ -32,6 +32,9 @@ Environment variables (all injected by agenix at runtime):
   Optional:
     LOGFIRE_TOKEN         — Logfire project token for observability.
                             If unset, logfire runs in local/dev mode (no remote export).
+    ZFS_POOL              — ZFS pool name. Must match nix/host/storage.nix.
+                            Default: "tank". Override when the appliance pool is named
+                            differently (e.g. a second appliance with a different layout).
 """
 
 from __future__ import annotations
@@ -118,7 +121,18 @@ class VoxnixSettings(BaseSettings):
     See docs/architecture.md § Private access — Tailscale.
     """
 
-    # ── ZFS quotas ───────────────────────────────────────────────────────────
+    # ── ZFS ──────────────────────────────────────────────────────────────────
+
+    zfs_pool: str = "tank"
+    """ZFS pool name. Must match the pool defined in nix/host/storage.nix.
+
+    Set via ZFS_POOL env var — the Nix host config is the single source of
+    truth for the pool name. The Python default ("tank") is a fallback for
+    local development only.
+
+    Changing this without updating nix/host/storage.nix (or vice versa) will
+    cause ZFS operations to target the wrong pool and fail with cryptic errors.
+    """
 
     zfs_user_quota: str = "10G"
     """Per-user ZFS quota applied to tank/users/<chat_id>.

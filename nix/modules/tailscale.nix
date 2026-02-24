@@ -112,7 +112,8 @@
         --auth-key="$TAILSCALE_AUTH_KEY" \
         --hostname="$hostname" \
         --accept-routes=false \
-        --ssh
+        --ssh \
+        --reset
     '';
   };
 }

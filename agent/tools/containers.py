@@ -190,11 +190,68 @@ async def create_container(
         )
 
 
+async def _tailscale_logout(name: str) -> None:
+    """Best-effort Tailscale logout inside a container before it is destroyed.
+
+    Runs `nixos-container run <name> -- tailscale logout` so the Tailscale
+    control plane removes the node immediately rather than leaving a ghost
+    entry that ages out over time (tagged devices have key expiry disabled).
+
+    This is intentionally fire-and-forget:
+      - The container may not be running (already stopped).
+      - The container may not have the Tailscale module.
+      - The control plane may be unreachable.
+      - run_command itself may raise (OSError, timeout, etc.).
+    None of these are fatal — the caller always proceeds with the destroy
+    regardless of whether logout succeeded or raised.
+    """
+    try:
+        logout = await run_command(
+            "nixos-container",
+            "run",
+            name,
+            "--",
+            "tailscale",
+            "logout",
+            timeout_seconds=15,
+        )
+        if logout.success:
+            logfire.info(
+                "Tailscale logout succeeded for container '{container_name}'",
+                container_name=name,
+            )
+        else:
+            # Not an error — the container may be stopped or may not have Tailscale.
+            logfire.info(
+                "Tailscale logout skipped or failed for '{container_name}' (container may be "
+                "stopped or not enrolled); proceeding with destroy",
+                container_name=name,
+                stderr=logout.stderr,
+                returncode=logout.returncode,
+            )
+            logger.debug(
+                "_tailscale_logout: name=%s returncode=%d stderr=%r",
+                name,
+                logout.returncode,
+                logout.stderr,
+            )
+    except Exception:
+        # Swallow any unexpected exception (OSError, timeout propagation, etc.)
+        # so that a broken logout path can never prevent container destruction.
+        logger.debug("_tailscale_logout raised unexpectedly for %s", name, exc_info=True)
+
+
 async def destroy_container(name: str, owner: str | None = None) -> ContainerResult:
     """Destroy a NixOS container and its ZFS dataset.
 
     Wraps `extra-container destroy <name>`, then cleans up the container's
     ZFS dataset hierarchy if an owner is provided.
+
+    Before destroying, attempts a best-effort `tailscale logout` inside the
+    container. This prevents ghost/stale entries from accumulating in the
+    Tailscale admin console when a container is destroyed and recreated with
+    the same name. The logout is fire-and-forget — failure does not abort the
+    destroy (the container may be stopped or may not have Tailscale).
 
     Note: `nixos-container destroy` is intentionally NOT used here.
     After a `nixos-rebuild switch`, NixOS activation adopts any conf
@@ -214,6 +271,10 @@ async def destroy_container(name: str, owner: str | None = None) -> ContainerRes
         ContainerResult indicating success or failure.
     """
     with logfire.span("container.destroy", container_name=name, owner=owner):
+        # Attempt Tailscale logout before teardown so the node is cleanly
+        # removed from the tailnet rather than leaving a ghost entry.
+        await _tailscale_logout(name)
+
         result = await run_command("extra-container", "destroy", name)
 
         if result.success:

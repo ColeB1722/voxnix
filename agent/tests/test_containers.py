@@ -22,6 +22,30 @@ from agent.tools.containers import (
 )
 from agent.tools.zfs import ZfsResult
 
+
+def _cmd_dispatch(**responses: CommandResult) -> AsyncMock:
+    """Return an AsyncMock for run_command that dispatches by the first argument.
+
+    Keys are command names (e.g. "nixos-container", "extra-container").
+    Calls with an unrecognised command fall back to ok().
+
+    This avoids ordered side_effect sequences — tests are robust to call-order
+    changes within the function under test.
+
+    Example::
+
+        mock_run = _cmd_dispatch(
+            **{"nixos-container": fail("not running"), "extra-container": ok()}
+        )
+    """
+
+    async def _dispatch(*args, **kwargs):
+        cmd = args[0] if args else ""
+        return responses.get(cmd, ok())
+
+    return AsyncMock(side_effect=_dispatch)
+
+
 # ── Test fixtures ─────────────────────────────────────────────────────────────
 
 FLAKE_PATH = "/var/lib/voxnix"
@@ -530,6 +554,133 @@ class TestDestroyContainer:
 
         assert result.success is False
         mock_zfs_destroy.assert_not_called()
+
+    async def test_tailscale_logout_called_before_destroy(self):
+        """tailscale logout is attempted inside the container before extra-container destroy."""
+        mock_run = _cmd_dispatch(**{"nixos-container": ok(), "extra-container": ok()})
+
+        with (
+            patch("agent.tools.containers.run_command", mock_run),
+            patch(
+                "agent.tools.containers.destroy_container_dataset",
+                AsyncMock(return_value=zfs_destroy_ok()),
+            ),
+        ):
+            result = await destroy_container("test-dev", owner=OWNER)
+
+        assert result.success is True
+
+        # Verify logout was attempted via nixos-container run ... tailscale logout
+        all_calls = mock_run.call_args_list
+        logout_calls = [
+            c for c in all_calls if c.args[0] == "nixos-container" and "logout" in c.args
+        ]
+        assert len(logout_calls) == 1, "Expected exactly one tailscale logout call"
+        assert "run" in logout_calls[0].args
+        assert "test-dev" in logout_calls[0].args
+        assert "tailscale" in logout_calls[0].args
+
+    async def test_tailscale_logout_failure_does_not_abort_destroy(self):
+        """If tailscale logout fails (e.g. container stopped), destroy still proceeds."""
+        mock_run = _cmd_dispatch(
+            **{
+                "nixos-container": fail("Container 'test-dev' is not running"),
+                "extra-container": ok(),
+            }
+        )
+
+        with (
+            patch("agent.tools.containers.run_command", mock_run),
+            patch(
+                "agent.tools.containers.destroy_container_dataset",
+                AsyncMock(return_value=zfs_destroy_ok()),
+            ),
+        ):
+            result = await destroy_container("test-dev", owner=OWNER)
+
+        # Destroy succeeded despite the logout failure
+        assert result.success is True
+
+        # extra-container destroy was still called
+        destroy_calls = [
+            c
+            for c in mock_run.call_args_list
+            if c.args[0] == "extra-container" and "destroy" in c.args
+        ]
+        assert len(destroy_calls) == 1
+
+    async def test_tailscale_logout_failure_not_logged_as_error(self, caplog):
+        """Tailscale logout failure is a debug-level event, not an error."""
+        mock_run = _cmd_dispatch(
+            **{"nixos-container": fail("not enrolled"), "extra-container": ok()}
+        )
+
+        with (
+            caplog.at_level(logging.ERROR, logger="agent.tools.containers"),
+            patch("agent.tools.containers.run_command", mock_run),
+            patch(
+                "agent.tools.containers.destroy_container_dataset",
+                AsyncMock(return_value=zfs_destroy_ok()),
+            ),
+        ):
+            await destroy_container("test-dev", owner=OWNER)
+
+        # No ERROR-level log for a best-effort logout that fails
+        error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        logout_errors = [r for r in error_records if "logout" in r.message.lower()]
+        assert len(logout_errors) == 0, (
+            f"Expected no error logs for tailscale logout failure, got: {logout_errors}"
+        )
+
+    async def test_tailscale_logout_exception_does_not_abort_destroy(self):
+        """If run_command raises (OSError, timeout, etc.), destroy still completes."""
+        call_count = 0
+
+        async def _raise_then_ok(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if args[0] == "nixos-container":
+                raise OSError("nixos-container: command not found")
+            return ok()
+
+        with (
+            patch("agent.tools.containers.run_command", side_effect=_raise_then_ok),
+            patch(
+                "agent.tools.containers.destroy_container_dataset",
+                AsyncMock(return_value=zfs_destroy_ok()),
+            ),
+        ):
+            result = await destroy_container("test-dev", owner=OWNER)
+
+        # Destroy must succeed even though logout raised
+        assert result.success is True
+
+    async def test_tailscale_logout_exception_logged_at_debug(self, caplog):
+        """An exception in _tailscale_logout is logged at debug, not error."""
+
+        async def _raise_then_ok(*args, **kwargs):
+            if args[0] == "nixos-container":
+                raise OSError("unexpected")
+            return ok()
+
+        with (
+            caplog.at_level(logging.DEBUG, logger="agent.tools.containers"),
+            patch("agent.tools.containers.run_command", side_effect=_raise_then_ok),
+            patch(
+                "agent.tools.containers.destroy_container_dataset",
+                AsyncMock(return_value=zfs_destroy_ok()),
+            ),
+        ):
+            await destroy_container("test-dev", owner=OWNER)
+
+        # Exception must be captured at debug level, not error
+        error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        logout_errors = [r for r in error_records if "logout" in r.message.lower()]
+        assert len(logout_errors) == 0, f"Expected no error-level logout logs, got: {logout_errors}"
+        debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any("logout" in r.message.lower() for r in debug_records), (
+            "Expected a debug-level log for the swallowed logout exception"
+        )
 
 
 # ── start_container ───────────────────────────────────────────────────────────
