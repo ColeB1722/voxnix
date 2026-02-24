@@ -15,7 +15,7 @@ You are working on **voxnix** — an agentic NixOS container orchestrator. A Tel
 
 **Appliance:** `192.168.8.146` (Hyper-V Gen 2 VM, 16GB RAM)
 **Agent service:** active, Telegram bot responding
-**Current branch:** `feat/zfs-pool-config-and-tailscale-cleanup` — not yet merged (PR open, awaiting CodeRabbit)
+**Current branch:** `main` — PR #77 merged, branch deleted
 **Last known good container:** `dev` running, Tailscale enrolled at `100.83.13.65` (this IP changes on re-enrollment)
 
 ---
@@ -154,29 +154,22 @@ Tagged devices (`tag:shared`) have **key expiry disabled by default** in Tailsca
 
 ## What to work on next (priority order)
 
-### 1. Merge PR `feat/zfs-pool-config-and-tailscale-cleanup` — unblocked
-Run CodeRabbit, triage findings, merge. Closes #60 and #68.
-
-```
-coderabbit review --type committed --base main --plain
-```
-
-### 2. Conversation history + session context (#48) — High
+### 1. Conversation history + session context (#48) — High
 Agent has no memory within a conversation. Each message is stateless. Consider doing #67 (A2A) first — A2A `contextId` gives per-user conversation continuity partially for free via the storage layer.
 
-### 3. A2A modularization (#67) — Architectural, 2-3 sessions
+### 2. A2A modularization (#67) — Architectural, 2-3 sessions
 Decouple Telegram bot from the agent via fasta2a. `agent.to_a2a()` exposes the container agent as an A2A server. Telegram becomes a thin A2A client. Prerequisite for multi-agent routing (#66, #29).
 
-### 4. Diagnostic tools for the agent (#47) — High
+### 3. Diagnostic tools for the agent (#47) — High
 Agent can't self-diagnose. `journalctl -M <name>`, `tailscale status`, `machinectl list` etc. as agent tools. High value — would have saved significant debugging time during deployment.
 
-### 5. Container query tool (#54) — High
+### 4. Container query tool (#54) — High
 Users can create/destroy/start/stop but `list_workloads` exists (`tool_list_workloads`). Issue #54 is about *deeper* metadata — "tell me about the dev container" (modules, status, Tailscale IP, storage usage). `list_workloads` covers basic listing; #54 covers per-container detail.
 
-### 6. Host Tailscale (#17) — Medium
+### 5. Host Tailscale (#17) — Medium
 Add `services.tailscale.enable = true` to host NixOS config. Enables out-of-LAN `just deploy` and SSH break-glass. Orthogonal to container Tailscale (#72).
 
-### 7. GitHub Deployment Action (#53) — Medium
+### 6. GitHub Deployment Action (#53) — Medium
 Deploy on merge to main via GitHub Actions. Removes local-machine LAN dependency.
 
 ---
@@ -192,7 +185,7 @@ Deploy on merge to main via GitHub Actions. Removes local-machine LAN dependency
 | #71 | Module self-description | Medium |
 | #70 | Voice message support | Medium |
 | #69 | opencode session-aware PR triage | Low/idea |
-| #68 | Surface ZFS pool name as config | **Done — pending merge** |
+| #68 | Surface ZFS pool name as config | **Done — merged PR #77** |
 | #67 | A2A modularization (Telegram ↔ agent) | High |
 | #66 | opencode Telegram wrapper | Low |
 | #65 | Git worktree support | Low |
@@ -200,7 +193,7 @@ Deploy on merge to main via GitHub Actions. Removes local-machine LAN dependency
 | #63 | iOS/Android native app | Low/idea |
 | #62 | TTL-based multi-turn conversation | Medium |
 | #61 | Zero trust auth layer for Telegram | Medium |
-| #60 | Stale Tailscale node cleanup + --reset flag | **Done — pending merge** |
+| #60 | Stale Tailscale node cleanup + --reset flag | **Done — merged PR #77** |
 | #59 | Use spec.model_copy() to avoid mutating ContainerSpec | Low |
 | #58 | Add Pydantic validator for zfs_user_quota format | Low |
 | #57 | Consolidate validate_container_name into ContainerSpec | Low |
