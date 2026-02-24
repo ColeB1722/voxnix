@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 # ZFS pool and dataset prefix — matches the disko layout in nix/host/storage.nix.
 _POOL = "tank"
 _USERS_ROOT = f"{_POOL}/users"
+_MOUNT_ROOT = f"/{_USERS_ROOT}"
 
 
 @dataclass
@@ -65,7 +66,7 @@ def _workspace_dataset(owner: str, container_name: str) -> str:
 
 def _user_mount_path(owner: str) -> str:
     """Return the host-side mount path for a user's root dataset."""
-    return f"/tank/users/{owner}"
+    return f"{_MOUNT_ROOT}/{owner}"
 
 
 def _workspace_mount_path(owner: str, container_name: str) -> str:
@@ -74,7 +75,7 @@ def _workspace_mount_path(owner: str, container_name: str) -> str:
     ZFS datasets under tank/users are mounted at /tank/users/... (see storage.nix).
     The workspace dataset's mountpoint follows the same convention.
     """
-    return f"/tank/users/{owner}/containers/{container_name}/workspace"
+    return f"{_MOUNT_ROOT}/{owner}/containers/{container_name}/workspace"
 
 
 async def _ensure_dataset(dataset: str, mountpoint: str) -> ZfsResult:
@@ -393,8 +394,8 @@ async def create_container_dataset(owner: str, container_name: str) -> ZfsResult
         # The outer workspace check above already confirmed workspace doesn't exist,
         # so only the intermediates need the check-then-create pattern.
         intermediates = [
-            (containers_ds, f"/tank/users/{owner}/containers"),
-            (container_ds, f"/tank/users/{owner}/containers/{container_name}"),
+            (containers_ds, f"{_MOUNT_ROOT}/{owner}/containers"),
+            (container_ds, f"{_MOUNT_ROOT}/{owner}/containers/{container_name}"),
         ]
         for ds, mp in intermediates:
             step_result = await _ensure_dataset(ds, mp)
