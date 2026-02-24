@@ -27,9 +27,9 @@ from dataclasses import dataclass
 import logfire
 from pydantic_ai import Agent, RunContext
 
-from agent.config import get_settings
+from agent.config import VoxnixSettings, get_settings
 from agent.nix_gen.discovery import discover_modules
-from agent.nix_gen.models import ContainerSpec
+from agent.nix_gen.models import ContainerSpec, validate_container_name
 from agent.tools.containers import (
     ContainerResult,
     create_container,
@@ -38,6 +38,7 @@ from agent.tools.containers import (
     stop_container,
 )
 from agent.tools.workloads import Workload, WorkloadError, get_container_owner, list_workloads
+from agent.tools.zfs import get_user_storage_info
 
 # ── Logfire instrumentation ────────────────────────────────────────────────────
 
@@ -127,7 +128,13 @@ Available workload modules: {modules_str}
 
 Guidelines:
 - Be concise. Users get brief status updates, not walls of text.
+- Do not use Markdown formatting in responses. Respond in plain text only.
+  Telegram does not render Markdown — raw markers like **bold** and `backticks` appear as-is.
+  Use plain dashes for lists, plain text for emphasis, and spell out code references naturally.
 - Containers are ephemeral by design — only ZFS-backed workspaces persist across restarts.
+- Containers with the tailscale module get a hostname on the tailnet matching the container name.
+  Users can SSH in via Tailscale SSH (e.g. ssh root@<container-name>). Always include the tailscale
+  module unless the user explicitly asks for a container without remote access.
 - Container names must be 11 characters or fewer (network interface name limit). Choose short names.
 - Destroy containers immediately when explicitly requested — do not ask for confirmation first.
   There is no conversation history, so a confirm-then-act flow cannot work.
@@ -158,7 +165,26 @@ async def tool_create_container(
     Returns:
         A plain-language summary of the result for the user.
     """
-    spec = ContainerSpec(name=name, owner=ctx.deps.owner, modules=modules)
+    # If the tailscale module is requested, inject the auth key from settings.
+    # Refuse early if the key isn't configured — a container with the tailscale
+    # module but no auth key would start but never connect to the tailnet.
+    tailscale_auth_key: str | None = None
+    if "tailscale" in modules:
+        settings: VoxnixSettings = get_settings()
+        if settings.tailscale_auth_key is None:
+            return (
+                "❌ The tailscale module requires a Tailscale auth key, "
+                "but TAILSCALE_AUTH_KEY is not configured on the appliance. "
+                "Ask the admin to add it via agenix."
+            )
+        tailscale_auth_key = settings.tailscale_auth_key.get_secret_value()
+
+    spec = ContainerSpec(
+        name=name,
+        owner=ctx.deps.owner,
+        modules=modules,
+        tailscale_auth_key=tailscale_auth_key,
+    )
     result: ContainerResult = await create_container(spec)
 
     if result.success:
@@ -172,10 +198,11 @@ async def tool_destroy_container(
     ctx: RunContext[VoxnixDeps],
     name: str,
 ) -> str:
-    """Destroy a container and its ephemeral state.
+    """Destroy a container, its ephemeral state, and its ZFS dataset.
 
     Only destroys containers owned by the requesting user.
-    ZFS workspace data is not affected — it persists on the host.
+    The container's ZFS dataset (persistent workspace) is cleaned up
+    after the container itself is torn down.
 
     Args:
         name: Name of the container to destroy.
@@ -183,10 +210,13 @@ async def tool_destroy_container(
     Returns:
         A plain-language summary of the result for the user.
     """
+    if name_error := validate_container_name(name):
+        return f"❌ {name_error}"
+
     if denied := await _check_ownership(name, ctx.deps.owner):
         return denied
 
-    result: ContainerResult = await destroy_container(name)
+    result: ContainerResult = await destroy_container(name, owner=ctx.deps.owner)
 
     if result.success:
         return f"✅ Container `{result.name}` destroyed."
@@ -207,6 +237,9 @@ async def tool_start_container(
     Returns:
         A plain-language summary of the result for the user.
     """
+    if name_error := validate_container_name(name):
+        return f"❌ {name_error}"
+
     if denied := await _check_ownership(name, ctx.deps.owner):
         return denied
 
@@ -231,6 +264,9 @@ async def tool_stop_container(
     Returns:
         A plain-language summary of the result for the user.
     """
+    if name_error := validate_container_name(name):
+        return f"❌ {name_error}"
+
     if denied := await _check_ownership(name, ctx.deps.owner):
         return denied
 
@@ -268,7 +304,25 @@ async def tool_list_workloads(ctx: RunContext[VoxnixDeps]) -> str:
     return "\n".join(lines)
 
 
-# ── Run helper ─────────────────────────────────────────────────────────────────
+@agent.tool
+async def tool_storage_usage(ctx: RunContext[VoxnixDeps]) -> str:
+    """Show storage usage and quota for the current user.
+
+    Reports how much disk space the user's container workspaces are
+    consuming and how much remains under their quota.
+
+    Returns:
+        A plain-language summary of the user's storage usage.
+    """
+    info = await get_user_storage_info(ctx.deps.owner)
+
+    if not info.success:
+        return f"❌ Could not query storage: {info.error}"
+
+    return info.message
+
+
+# ── Run helper ─────────────────────────────────────────────────────────────
 
 
 async def run(message: str, owner: str) -> str:

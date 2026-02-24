@@ -29,4 +29,3 @@ Thumbs.db
 *.age
 !secrets/*.age
 !*.age.example
-docs/handoff.md

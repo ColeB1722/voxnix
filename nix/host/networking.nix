@@ -1,14 +1,20 @@
 # Networking configuration for the voxnix appliance.
 #
 # Provides:
-#   - NAT for containers with privateNetwork=true to reach the internet
+#   - Outbound bridge (br-vox) for container internet access
+#   - NAT/masquerading from bridge to host's external interface
+#   - dnsmasq DHCP server on the bridge (10.100.0.0/24)
 #   - SSH server (key-based, LAN only)
 #   - Firewall with minimal open ports
-#   - Container veth interfaces trusted through the firewall
 #
-# All containers use privateNetwork=true (see docs/architecture.md § Networking Model).
-# The host performs NAT so containers can connect outbound (Tailscale, package
-# downloads, etc.) without exposing the host's network namespace.
+# All containers use privateNetwork=true + hostBridge="br-vox".
+# The bridge provides internet connectivity so Tailscale can enroll
+# and packages can be downloaded inside containers.
+#
+# Network layout:
+#   Host bridge:    10.100.0.1/24  (br-vox)
+#   DHCP range:     10.100.0.100–200
+#   NAT:            br-vox → eth0
 #
 # See docs/architecture.md § Host networking and § Inter-workload networking.
 {
@@ -22,26 +28,66 @@
 
   networking.hostName = "voxnix";
 
-  # Use networkd for predictable interface management.
+  # Use DHCP for the host's external interface.
   # Hyper-V synthetic NIC appears as eth0 (hv_netvsc driver).
   networking.useDHCP = true;
 
+  # ── Outbound bridge for containers ─────────────────────────────────────────
+
+  # br-vox: the shared outbound bridge all voxnix containers connect to.
+  # Each container gets a virtual ethernet attached to this bridge via nspawn's
+  # --network-bridge flag (set by hostBridge = "br-vox" in mkContainer.nix).
+  # The bridge acts as the default gateway; the host NATs traffic to eth0.
+  #
+  # The bridge has no physical interfaces — it is purely virtual, acting as
+  # a software switch between containers and the host NAT.
+  networking.bridges.br-vox.interfaces = [ ];
+
+  networking.interfaces."br-vox".ipv4.addresses = [
+    {
+      address = "10.100.0.1";
+      prefixLength = 24;
+    }
+  ];
+
+  # ── DHCP for the bridge ────────────────────────────────────────────────────
+
+  # dnsmasq serves DHCP leases on br-vox so containers get IPs automatically
+  # without requiring static IP allocation in mkContainer.nix.
+  # DNS queries from containers are forwarded to the host's upstream resolvers.
+  services.dnsmasq = {
+    enable = true;
+    settings = {
+      # Only listen on the bridge — do not interfere with eth0 or other interfaces.
+      interface = "br-vox";
+      bind-interfaces = true;
+
+      # DHCP range: 10.100.0.100–200, 12-hour lease.
+      dhcp-range = [ "10.100.0.100,10.100.0.200,12h" ];
+
+      # Use the host's upstream resolvers for DNS forwarding.
+      # Containers inherit the host's DNS configuration.
+      no-resolv = false;
+    };
+  };
+
   # ── NAT for containers ─────────────────────────────────────────────────────
 
-  # nixos-container with privateNetwork=true creates a veth pair per container:
-  #   host side:  ve-<name>    (e.g. ve-dev-abc)
-  #   container:  eth0         (inside the container's network namespace)
-  #
-  # Containers get IPs in the 10.233.x.0/24 range (NixOS default).
-  # The host acts as the gateway and NATs outbound traffic.
+  # Masquerade container traffic from br-vox out through eth0.
+  # This gives every container internet access so Tailscale can enroll
+  # and outbound connections (package downloads, etc.) work.
   networking.nat = {
     enable = true;
 
-    # Wildcard match — covers all current and future container veth interfaces.
-    internalInterfaces = [ "ve-+" ];
+    # br-vox: shared outbound bridge used by all containers via hostBridge.
+    # ve-+:   point-to-point veth pairs, if any container uses localAddress
+    #         instead of hostBridge (kept for forward compatibility).
+    internalInterfaces = [
+      "br-vox"
+      "ve-+"
+    ];
 
-    # Hyper-V synthetic NIC. If your interface name differs, update this.
-    # Check with `ip link` after first boot.
+    # Hyper-V synthetic NIC. Update if your interface name differs.
     externalInterface = "eth0";
   };
 
@@ -75,10 +121,14 @@
     # SSH is the only service exposed on the host's external interface.
     allowedTCPPorts = [ 22 ];
 
-    # Trust all container veth interfaces — containers need unrestricted
-    # communication with the host (DNS, gateway, package downloads).
+    # Trust the container bridge and any point-to-point veth interfaces.
+    # Containers need unrestricted outbound access through the host
+    # (DNS, gateway, Tailscale enrollment, package downloads).
     # Inter-container isolation is enforced by separate network namespaces,
     # not by the host firewall.
-    trustedInterfaces = [ "ve-+" ];
+    trustedInterfaces = [
+      "br-vox"
+      "ve-+"
+    ];
   };
 }
