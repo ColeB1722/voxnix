@@ -107,7 +107,9 @@ let
   # When spec.workspace is absent, no bind mount is added — the workspace module
   # still creates /workspace as an ephemeral directory inside the container.
   hasWorkspace =
-    builtins.hasAttr "workspace" validSpec && builtins.isString (validSpec.workspace or "");
+    builtins.hasAttr "workspace" validSpec
+    && builtins.isString (validSpec.workspace or "")
+    && (validSpec.workspace or "") != "";
   workspaceBindMounts =
     if hasWorkspace then
       {

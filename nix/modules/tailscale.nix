@@ -65,6 +65,11 @@
       # This prevents the unit from blocking multi-user.target (and therefore
       # the nspawn READY notification to the host) while tailscale up runs.
       Type = "simple";
+      # Retry on transient failures (control plane unreachable, DNS hiccup,
+      # auth key rate-limited). Without this, a single failed `tailscale up`
+      # leaves the container permanently disconnected until a manual restart.
+      Restart = "on-failure";
+      RestartSec = 15;
     };
 
     script = ''

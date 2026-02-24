@@ -110,6 +110,17 @@ async def _ensure_dataset(dataset: str, mountpoint: str) -> ZfsResult:
             message=f"Created dataset '{dataset}'.",
         )
 
+    # Treat "already exists" from zfs create as success — another process created
+    # the dataset in the window between our zfs list check and zfs create (TOCTOU).
+    # The desired state (dataset exists) is achieved regardless.
+    stderr_lower = (result.stderr or result.stdout or "").lower()
+    if "already exists" in stderr_lower or "dataset exists" in stderr_lower:
+        return ZfsResult(
+            success=True,
+            dataset=dataset,
+            message=f"Dataset '{dataset}' already exists (created concurrently).",
+        )
+
     return ZfsResult(
         success=False,
         dataset=dataset,
@@ -316,8 +327,10 @@ async def create_container_dataset(owner: str, container_name: str) -> ZfsResult
     Creates tank/users/<owner>/containers/<container_name>/workspace.
     Ensures the parent user dataset exists first via create_user_datasets().
 
-    The -p flag on `zfs create` handles all intermediate datasets
-    (owner, containers, container_name) in one call.
+    Each intermediate dataset (containers/, containers/<name>/) is created
+    individually via _ensure_dataset with an explicit mountpoint, so host
+    directories exist for nspawn bind mounts. The workspace leaf is created
+    directly since the outer existence check already confirmed non-existence.
 
     Args:
         owner: User identifier (Telegram chat_id).
