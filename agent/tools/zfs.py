@@ -63,6 +63,11 @@ def _workspace_dataset(owner: str, container_name: str) -> str:
     return f"{_USERS_ROOT}/{owner}/containers/{container_name}/workspace"
 
 
+def _user_mount_path(owner: str) -> str:
+    """Return the host-side mount path for a user's root dataset."""
+    return f"/tank/users/{owner}"
+
+
 def _workspace_mount_path(owner: str, container_name: str) -> str:
     """Return the host-side mount path for a container's workspace.
 
@@ -70,6 +75,46 @@ def _workspace_mount_path(owner: str, container_name: str) -> str:
     The workspace dataset's mountpoint follows the same convention.
     """
     return f"/tank/users/{owner}/containers/{container_name}/workspace"
+
+
+async def _ensure_dataset(dataset: str, mountpoint: str) -> ZfsResult:
+    """Create a ZFS dataset at the given mountpoint if it doesn't already exist.
+
+    Idempotent — returns success immediately if the dataset exists. Does NOT
+    update the mountpoint on an existing dataset; callers that need to fix
+    legacy mountpoints should do so explicitly (see create_user_datasets).
+
+    Args:
+        dataset: Full ZFS dataset path (e.g. "tank/users/123/containers/dev").
+        mountpoint: Absolute host path for the dataset's mountpoint.
+
+    Returns:
+        ZfsResult indicating success or failure.
+    """
+    check = await run_command("zfs", "list", "-H", "-o", "name", dataset, timeout_seconds=10)
+    if check.success:
+        return ZfsResult(
+            success=True,
+            dataset=dataset,
+            message=f"Dataset '{dataset}' already exists.",
+        )
+
+    result = await run_command(
+        "zfs", "create", "-o", f"mountpoint={mountpoint}", dataset, timeout_seconds=30
+    )
+    if result.success:
+        return ZfsResult(
+            success=True,
+            dataset=dataset,
+            message=f"Created dataset '{dataset}'.",
+        )
+
+    return ZfsResult(
+        success=False,
+        dataset=dataset,
+        message=f"Failed to create dataset '{dataset}'.",
+        error=result.stderr or result.stdout,
+    )
 
 
 async def _apply_quota(dataset: str, quota: str) -> ZfsResult:
@@ -166,7 +211,7 @@ async def create_user_datasets(owner: str) -> ZfsResult:
             )
             # Always set mountpoint — fixes datasets created with 'legacy' mountpoint
             # by prior runs (before this fix). Idempotent if already correct.
-            mount_path = f"/tank/users/{owner}"
+            mount_path = _user_mount_path(owner)
             mp_result = await run_command(
                 "zfs", "set", f"mountpoint={mount_path}", dataset, timeout_seconds=10
             )
@@ -205,60 +250,62 @@ async def create_user_datasets(owner: str) -> ZfsResult:
         # appears as a real directory on the host filesystem. Without this,
         # child datasets inherit the parent's 'legacy' mountpoint and are never
         # auto-mounted, which means the directory doesn't exist for nspawn bind mounts.
-        mount_path = f"/tank/users/{owner}"
+        # Note: we call zfs create directly here rather than _ensure_dataset because
+        # the outer zfs list check above already established non-existence.
         result = await run_command(
             "zfs",
             "create",
             "-o",
-            f"mountpoint={mount_path}",
+            f"mountpoint={_user_mount_path(owner)}",
             dataset,
             timeout_seconds=30,
         )
-
-        if result.success:
-            logfire.info("Created user dataset '{dataset}'", dataset=dataset)
-            # Apply quota to the newly created dataset.
-            quota_result = await _apply_quota(dataset, quota)
-            if not quota_result.success:
-                logfire.error(
-                    "User dataset created but quota application failed for '{dataset}'",
-                    dataset=dataset,
-                    error=quota_result.error,
-                )
-                logger.error(
-                    "create_user_datasets: quota application failed for %s: %s",
-                    dataset,
-                    quota_result.error,
-                )
-                return ZfsResult(
-                    success=False,
-                    dataset=dataset,
-                    message=f"User dataset '{dataset}' created but quota could not be applied.",
-                    error=quota_result.error,
-                )
-            return ZfsResult(
-                success=True,
+        if not result.success:
+            logfire.error(
+                "Failed to create user dataset '{dataset}'",
                 dataset=dataset,
-                message=f"Created user dataset '{dataset}' (quota: {quota}).",
+                stderr=result.stderr,
+                returncode=result.returncode,
+            )
+            logger.error(
+                "create_user_datasets failed: dataset=%s returncode=%d stderr=%r",
+                dataset,
+                result.returncode,
+                result.stderr,
+            )
+            return ZfsResult(
+                success=False,
+                dataset=dataset,
+                message=f"Failed to create user dataset '{dataset}'.",
+                error=result.stderr or result.stdout,
             )
 
-        logfire.error(
-            "Failed to create user dataset '{dataset}'",
-            dataset=dataset,
-            stderr=result.stderr,
-            returncode=result.returncode,
-        )
-        logger.error(
-            "create_user_datasets failed: dataset=%s returncode=%d stderr=%r",
-            dataset,
-            result.returncode,
-            result.stderr,
-        )
+        logfire.info("Created user dataset '{dataset}'", dataset=dataset)
+
+        # Apply quota to the newly created dataset.
+        quota_result = await _apply_quota(dataset, quota)
+        if not quota_result.success:
+            logfire.error(
+                "User dataset created but quota application failed for '{dataset}'",
+                dataset=dataset,
+                error=quota_result.error,
+            )
+            logger.error(
+                "create_user_datasets: quota application failed for %s: %s",
+                dataset,
+                quota_result.error,
+            )
+            return ZfsResult(
+                success=False,
+                dataset=dataset,
+                message=f"User dataset '{dataset}' created but quota could not be applied.",
+                error=quota_result.error,
+            )
+
         return ZfsResult(
-            success=False,
+            success=True,
             dataset=dataset,
-            message=f"Failed to create user dataset '{dataset}'.",
-            error=result.stderr or result.stdout,
+            message=f"Created user dataset '{dataset}' (quota: {quota}).",
         )
 
 
@@ -336,96 +383,73 @@ async def create_container_dataset(owner: str, container_name: str) -> ZfsResult
         # host path to exist as a directory before the container starts.
         #
         # Hierarchy (all under tank/users/<owner>/):
-        #   containers/                       → /tank/users/<owner>/containers
-        #   containers/<name>/                → /tank/users/<owner>/containers/<name>
-        #   containers/<name>/workspace       → /tank/users/<owner>/containers/<name>/workspace
+        #   containers/              → /tank/users/<owner>/containers
+        #   containers/<name>/       → /tank/users/<owner>/containers/<name>
+        #   containers/<name>/workspace  → /tank/users/<owner>/containers/<name>/workspace
         containers_ds = f"{_USERS_ROOT}/{owner}/containers"
-        containers_path = f"/tank/users/{owner}/containers"
         container_ds = _container_dataset(owner, container_name)
-        container_root = f"/tank/users/{owner}/containers/{container_name}"
 
-        # Intermediate: containers/ dataset
-        containers_check = await run_command(
-            "zfs", "list", "-H", "-o", "name", containers_ds, timeout_seconds=10
-        )
-        if not containers_check.success:
-            containers_result = await run_command(
-                "zfs",
-                "create",
-                "-o",
-                f"mountpoint={containers_path}",
-                containers_ds,
-                timeout_seconds=30,
-            )
-            if not containers_result.success:
+        # Ensure intermediate datasets exist with correct mountpoints (idempotent).
+        # The outer workspace check above already confirmed workspace doesn't exist,
+        # so only the intermediates need the check-then-create pattern.
+        intermediates = [
+            (containers_ds, f"/tank/users/{owner}/containers"),
+            (container_ds, f"/tank/users/{owner}/containers/{container_name}"),
+        ]
+        for ds, mp in intermediates:
+            step_result = await _ensure_dataset(ds, mp)
+            if not step_result.success:
+                logfire.error(
+                    "Failed to create intermediate dataset '{dataset}'",
+                    dataset=ds,
+                    error=step_result.error,
+                )
+                logger.error(
+                    "create_container_dataset failed at '%s': %s",
+                    ds,
+                    step_result.error,
+                )
                 return ZfsResult(
                     success=False,
                     dataset=workspace_ds,
-                    message=f"Failed to create intermediate dataset '{containers_ds}'.",
-                    error=containers_result.stderr or containers_result.stdout,
+                    message=step_result.message,
+                    error=step_result.error,
                 )
 
-        # Intermediate: containers/<name>/ dataset
-        container_check = await run_command(
-            "zfs", "list", "-H", "-o", "name", container_ds, timeout_seconds=10
-        )
-        if not container_check.success:
-            container_result = await run_command(
-                "zfs",
-                "create",
-                "-o",
-                f"mountpoint={container_root}",
-                container_ds,
-                timeout_seconds=30,
-            )
-            if not container_result.success:
-                return ZfsResult(
-                    success=False,
-                    dataset=workspace_ds,
-                    message=f"Failed to create intermediate dataset '{container_ds}'.",
-                    error=container_result.stderr or container_result.stdout,
-                )
-
-        # Leaf: containers/<name>/workspace dataset
+        # Create the workspace leaf directly — we already know it doesn't exist.
         result = await run_command(
-            "zfs",
-            "create",
-            "-o",
-            f"mountpoint={mount_path}",
-            workspace_ds,
-            timeout_seconds=30,
+            "zfs", "create", "-o", f"mountpoint={mount_path}", workspace_ds, timeout_seconds=30
         )
-
-        if result.success:
-            logfire.info(
-                "Created container dataset '{dataset}' at {mount_path}",
+        if not result.success:
+            logfire.error(
+                "Failed to create container dataset '{dataset}'",
                 dataset=workspace_ds,
-                mount_path=mount_path,
+                stderr=result.stderr,
+                returncode=result.returncode,
+            )
+            logger.error(
+                "create_container_dataset failed: dataset=%s returncode=%d stderr=%r",
+                workspace_ds,
+                result.returncode,
+                result.stderr,
             )
             return ZfsResult(
-                success=True,
+                success=False,
                 dataset=workspace_ds,
-                message=f"Created container dataset at '{mount_path}'.",
-                mount_path=mount_path,
+                message=f"Failed to create container dataset '{workspace_ds}'.",
+                error=result.stderr or result.stdout,
             )
 
-        logfire.error(
-            "Failed to create container dataset '{dataset}'",
+        logfire.info(
+            "Created container dataset '{dataset}' at {mount_path}",
             dataset=workspace_ds,
-            stderr=result.stderr,
-            returncode=result.returncode,
-        )
-        logger.error(
-            "create_container_dataset failed: dataset=%s returncode=%d stderr=%r",
-            workspace_ds,
-            result.returncode,
-            result.stderr,
+            mount_path=mount_path,
         )
         return ZfsResult(
-            success=False,
+            success=True,
             dataset=workspace_ds,
-            message=f"Failed to create container dataset '{workspace_ds}'.",
-            error=result.stderr or result.stdout,
+            message=f"Created container dataset at '{mount_path}'.",
+            mount_path=mount_path,
         )
 
 
