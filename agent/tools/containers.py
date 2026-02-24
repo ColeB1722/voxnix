@@ -201,38 +201,44 @@ async def _tailscale_logout(name: str) -> None:
       - The container may not be running (already stopped).
       - The container may not have the Tailscale module.
       - The control plane may be unreachable.
+      - run_command itself may raise (OSError, timeout, etc.).
     None of these are fatal — the caller always proceeds with the destroy
-    regardless of whether logout succeeded.
+    regardless of whether logout succeeded or raised.
     """
-    logout = await run_command(
-        "nixos-container",
-        "run",
-        name,
-        "--",
-        "tailscale",
-        "logout",
-        timeout_seconds=15,
-    )
-    if logout.success:
-        logfire.info(
-            "Tailscale logout succeeded for container '{container_name}'",
-            container_name=name,
-        )
-    else:
-        # Not an error — the container may be stopped or may not have Tailscale.
-        logfire.info(
-            "Tailscale logout skipped or failed for '{container_name}' (container may be "
-            "stopped or not enrolled); proceeding with destroy",
-            container_name=name,
-            stderr=logout.stderr,
-            returncode=logout.returncode,
-        )
-        logger.debug(
-            "_tailscale_logout: name=%s returncode=%d stderr=%r",
+    try:
+        logout = await run_command(
+            "nixos-container",
+            "run",
             name,
-            logout.returncode,
-            logout.stderr,
+            "--",
+            "tailscale",
+            "logout",
+            timeout_seconds=15,
         )
+        if logout.success:
+            logfire.info(
+                "Tailscale logout succeeded for container '{container_name}'",
+                container_name=name,
+            )
+        else:
+            # Not an error — the container may be stopped or may not have Tailscale.
+            logfire.info(
+                "Tailscale logout skipped or failed for '{container_name}' (container may be "
+                "stopped or not enrolled); proceeding with destroy",
+                container_name=name,
+                stderr=logout.stderr,
+                returncode=logout.returncode,
+            )
+            logger.debug(
+                "_tailscale_logout: name=%s returncode=%d stderr=%r",
+                name,
+                logout.returncode,
+                logout.stderr,
+            )
+    except Exception:
+        # Swallow any unexpected exception (OSError, timeout propagation, etc.)
+        # so that a broken logout path can never prevent container destruction.
+        logger.debug("_tailscale_logout raised unexpectedly for %s", name, exc_info=True)
 
 
 async def destroy_container(name: str, owner: str | None = None) -> ContainerResult:

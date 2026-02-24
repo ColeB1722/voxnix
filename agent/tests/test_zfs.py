@@ -31,11 +31,13 @@ from agent.tools.zfs import (
 
 OWNER = "123456789"
 CONTAINER = "dev-abc"
-USER_DS = f"tank/users/{OWNER}"
-CONTAINER_DS = f"tank/users/{OWNER}/containers/{CONTAINER}"
-WORKSPACE_DS = f"tank/users/{OWNER}/containers/{CONTAINER}/workspace"
-MOUNT_PATH = f"/tank/users/{OWNER}/containers/{CONTAINER}/workspace"
 DEFAULT_QUOTA = "10G"
+DEFAULT_POOL = "tank"
+
+USER_DS = f"{DEFAULT_POOL}/users/{OWNER}"
+CONTAINER_DS = f"{DEFAULT_POOL}/users/{OWNER}/containers/{CONTAINER}"
+WORKSPACE_DS = f"{DEFAULT_POOL}/users/{OWNER}/containers/{CONTAINER}/workspace"
+MOUNT_PATH = f"/{DEFAULT_POOL}/users/{OWNER}/containers/{CONTAINER}/workspace"
 
 
 def ok(stdout: str = "") -> CommandResult:
@@ -46,9 +48,6 @@ def ok(stdout: str = "") -> CommandResult:
 def fail(stderr: str = "error") -> CommandResult:
     """Failed CLI result."""
     return CommandResult(stdout="", stderr=stderr, returncode=1)
-
-
-DEFAULT_POOL = "tank"
 
 
 def _mock_settings(quota: str = DEFAULT_QUOTA, pool: str = DEFAULT_POOL) -> MagicMock:

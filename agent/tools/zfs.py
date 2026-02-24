@@ -85,6 +85,16 @@ def _workspace_dataset(owner: str, container_name: str) -> str:
     return f"{_users_root()}/{owner}/containers/{container_name}/workspace"
 
 
+def _containers_dataset(owner: str) -> str:
+    """Return the ZFS dataset path for a user's containers root dataset."""
+    return f"{_users_root()}/{owner}/containers"
+
+
+def _containers_mount_path(owner: str) -> str:
+    """Return the host-side mount path for a user's containers root dataset."""
+    return f"{_mount_root()}/{owner}/containers"
+
+
 def _user_mount_path(owner: str) -> str:
     """Return the host-side mount path for a user's root dataset."""
     return f"{_mount_root()}/{owner}"
@@ -421,14 +431,14 @@ async def create_container_dataset(owner: str, container_name: str) -> ZfsResult
         #   containers/              → /tank/users/<owner>/containers
         #   containers/<name>/       → /tank/users/<owner>/containers/<name>
         #   containers/<name>/workspace  → /tank/users/<owner>/containers/<name>/workspace
-        containers_ds = f"{_users_root()}/{owner}/containers"
+        containers_ds = _containers_dataset(owner)
         container_ds = _container_dataset(owner, container_name)
 
         # Ensure intermediate datasets exist with correct mountpoints (idempotent).
         # The outer workspace check above already confirmed workspace doesn't exist,
         # so only the intermediates need the check-then-create pattern.
         intermediates = [
-            (containers_ds, f"{_mount_root()}/{owner}/containers"),
+            (containers_ds, _containers_mount_path(owner)),
             (container_ds, f"{_mount_root()}/{owner}/containers/{container_name}"),
         ]
         for ds, mp in intermediates:
