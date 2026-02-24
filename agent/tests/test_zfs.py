@@ -48,10 +48,14 @@ def fail(stderr: str = "error") -> CommandResult:
     return CommandResult(stdout="", stderr=stderr, returncode=1)
 
 
-def _mock_settings(quota: str = DEFAULT_QUOTA) -> MagicMock:
-    """Return a mock VoxnixSettings with the given zfs_user_quota."""
+DEFAULT_POOL = "tank"
+
+
+def _mock_settings(quota: str = DEFAULT_QUOTA, pool: str = DEFAULT_POOL) -> MagicMock:
+    """Return a mock VoxnixSettings with the given zfs_user_quota and zfs_pool."""
     settings = MagicMock()
     settings.zfs_user_quota = quota
+    settings.zfs_pool = pool
     return settings
 
 
@@ -59,9 +63,11 @@ def _mock_settings(quota: str = DEFAULT_QUOTA) -> MagicMock:
 def _mock_get_settings():
     """Mock get_settings() for all tests so no env vars are required.
 
-    Tests that need a different quota can patch again locally.
+    Tests that need a different quota or pool can patch again locally.
     """
-    with patch("agent.tools.zfs.get_settings", return_value=_mock_settings(DEFAULT_QUOTA)):
+    with patch(
+        "agent.tools.zfs.get_settings", return_value=_mock_settings(DEFAULT_QUOTA, DEFAULT_POOL)
+    ):
         yield
 
 
@@ -84,12 +90,12 @@ class TestPathHelpers:
         assert _workspace_mount_path(OWNER, CONTAINER) == MOUNT_PATH
 
     def test_user_dataset_different_owner(self):
-        assert _user_dataset("999") == "tank/users/999"
+        assert _user_dataset("999") == f"{DEFAULT_POOL}/users/999"
 
     def test_workspace_mount_path_format(self):
-        """Mount path must start with /tank/users/ — matches storage.nix layout."""
+        """Mount path must start with /<pool>/users/ — matches storage.nix layout."""
         path = _workspace_mount_path("owner1", "ctr1")
-        assert path.startswith("/tank/users/")
+        assert path.startswith(f"/{DEFAULT_POOL}/users/")
         assert path.endswith("/workspace")
 
 
