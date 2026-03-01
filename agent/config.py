@@ -165,7 +165,7 @@ class VoxnixSettings(BaseSettings):
         """
         if v == "none":
             return v
-        if not re.match(r"^\d+(\.\d+)?[KMGTP]?$", v, re.IGNORECASE):
+        if not re.match(r"^\d+(\.\d+)?[KMGTP]$", v, re.IGNORECASE):
             msg = (
                 f"Invalid ZFS quota format: '{v}'. "
                 "Use a ZFS size string (e.g. '10G', '512M', '1T') or 'none' to disable."
