@@ -109,12 +109,83 @@ def _workspace_mount_path(owner: str, container_name: str) -> str:
     return f"{_mount_root()}/{owner}/containers/{container_name}/workspace"
 
 
+async def _ensure_mounted(dataset: str) -> ZfsResult:
+    """Ensure a ZFS dataset is mounted, mounting it if necessary.
+
+    ZFS datasets can exist without being mounted — e.g. after a failed prior
+    container start, or after a reboot where the parent has mountpoint=legacy
+    and children have explicit mountpoints. An unmounted dataset means its
+    mountpoint directory doesn't exist on the filesystem, which breaks
+    systemd-nspawn bind mounts.
+
+    This function checks the mount state via `zfs get -H -o value mounted`
+    and runs `zfs mount` if needed. Idempotent — returns success immediately
+    if the dataset is already mounted.
+
+    Args:
+        dataset: Full ZFS dataset path (e.g. "tank/users/123/containers/dev").
+
+    Returns:
+        ZfsResult indicating success or failure.
+    """
+    check = await run_command(
+        "zfs", "get", "-H", "-o", "value", "mounted", dataset, timeout_seconds=10
+    )
+    if not check.success:
+        logfire.error(
+            "Failed to check mount state of '{dataset}'",
+            dataset=dataset,
+            stderr=check.stderr,
+        )
+        return ZfsResult(
+            success=False,
+            dataset=dataset,
+            message=f"Failed to check mount state of '{dataset}'.",
+            error=check.stderr or check.stdout,
+        )
+
+    if check.stdout.strip() == "yes":
+        return ZfsResult(
+            success=True,
+            dataset=dataset,
+            message=f"Dataset '{dataset}' is already mounted.",
+        )
+
+    # Dataset exists but is not mounted — mount it.
+    logfire.info("Dataset '{dataset}' exists but is not mounted — mounting", dataset=dataset)
+    mount_result = await run_command("zfs", "mount", dataset, timeout_seconds=10)
+    if mount_result.success:
+        logfire.info("Mounted dataset '{dataset}'", dataset=dataset)
+        return ZfsResult(
+            success=True,
+            dataset=dataset,
+            message=f"Mounted dataset '{dataset}'.",
+        )
+
+    logfire.error(
+        "Failed to mount dataset '{dataset}'",
+        dataset=dataset,
+        stderr=mount_result.stderr,
+    )
+    logger.error(
+        "_ensure_mounted failed: dataset=%s stderr=%r",
+        dataset,
+        mount_result.stderr,
+    )
+    return ZfsResult(
+        success=False,
+        dataset=dataset,
+        message=f"Failed to mount dataset '{dataset}'.",
+        error=mount_result.stderr or mount_result.stdout,
+    )
+
+
 async def _ensure_dataset(dataset: str, mountpoint: str) -> ZfsResult:
     """Create a ZFS dataset at the given mountpoint if it doesn't already exist.
 
-    Idempotent — returns success immediately if the dataset exists. Does NOT
-    update the mountpoint on an existing dataset; callers that need to fix
-    legacy mountpoints should do so explicitly (see create_user_datasets).
+    Idempotent — returns success if the dataset exists and is mounted. If the
+    dataset exists but is not mounted (e.g. after a reboot or failed prior
+    attempt), it will be mounted automatically.
 
     Args:
         dataset: Full ZFS dataset path (e.g. "tank/users/123/containers/dev").
@@ -125,11 +196,9 @@ async def _ensure_dataset(dataset: str, mountpoint: str) -> ZfsResult:
     """
     check = await run_command("zfs", "list", "-H", "-o", "name", dataset, timeout_seconds=10)
     if check.success:
-        return ZfsResult(
-            success=True,
-            dataset=dataset,
-            message=f"Dataset '{dataset}' already exists.",
-        )
+        # Dataset exists — ensure it's mounted so the directory is present
+        # on the filesystem for nspawn bind mounts.
+        return await _ensure_mounted(dataset)
 
     result = await run_command(
         "zfs", "create", "-o", f"mountpoint={mountpoint}", dataset, timeout_seconds=30
@@ -263,6 +332,22 @@ async def create_user_datasets(owner: str) -> ZfsResult:
                     "Failed to set mountpoint for existing user dataset %s: %s",
                     dataset,
                     mp_result.stderr,
+                )
+            # Ensure the dataset is mounted — zfs set mountpoint= updates metadata
+            # but does NOT mount the dataset. Without this, the directory at the
+            # mountpoint may not exist, breaking nspawn bind mounts for containers.
+            mount_result = await _ensure_mounted(dataset)
+            if not mount_result.success:
+                logfire.error(
+                    "User dataset '{dataset}' exists but could not be mounted",
+                    dataset=dataset,
+                    error=mount_result.error,
+                )
+                return ZfsResult(
+                    success=False,
+                    dataset=dataset,
+                    message=f"User dataset '{dataset}' exists but could not be mounted.",
+                    error=mount_result.error,
                 )
             # Always apply quota — keeps it in sync with config changes.
             quota_result = await _apply_quota(dataset, quota)
@@ -414,6 +499,22 @@ async def create_container_dataset(owner: str, container_name: str) -> ZfsResult
                     "Failed to set mountpoint for existing workspace dataset %s: %s",
                     workspace_ds,
                     mp_result.stderr,
+                )
+            # Ensure the workspace dataset is mounted — the bind-mount source
+            # directory must exist on the host for systemd-nspawn to start.
+            mount_result = await _ensure_mounted(workspace_ds)
+            if not mount_result.success:
+                logfire.error(
+                    "Workspace dataset '{dataset}' exists but could not be mounted",
+                    dataset=workspace_ds,
+                    error=mount_result.error,
+                )
+                return ZfsResult(
+                    success=False,
+                    dataset=workspace_ds,
+                    message=f"Workspace dataset '{workspace_ds}' exists but could not be mounted.",
+                    error=mount_result.error,
+                    mount_path=mount_path,
                 )
             return ZfsResult(
                 success=True,

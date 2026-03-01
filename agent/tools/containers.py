@@ -100,12 +100,15 @@ async def create_container(
                 error=zfs_result.error,
             )
 
-        # Attach the workspace mount path to the spec so the Nix expression
-        # generator includes a bindMounts entry in mkContainer.
-        spec.workspace_path = zfs_result.mount_path
+        # Attach the workspace mount path to a copy of the spec so the Nix
+        # expression generator includes a bindMounts entry in mkContainer.
+        # Uses model_copy() to avoid mutating the caller's object — if the
+        # spec is reused (e.g. retries, logging), callers won't see stale
+        # workspace_path state from a prior attempt. (Fixes #59.)
+        spec_with_workspace = spec.model_copy(update={"workspace_path": zfs_result.mount_path})
 
         # ── Step 2: Generate Nix expression and create container ───────
-        expr = generate_container_expr(spec, flake_path)
+        expr = generate_container_expr(spec_with_workspace, flake_path)
 
         with tempfile.NamedTemporaryFile(
             suffix=".nix",
@@ -143,11 +146,40 @@ async def create_container(
 
         # ── Container creation failed ──────────────────────────────────────
         # Only clean up the ZFS dataset if the container was never installed.
+        #
+        # FRAGILE HEURISTIC (see #73):
         # extra-container prints "Installing containers:\n<name>" to stdout on
-        # successful install before calling `systemctl start`. If the install
-        # succeeded but the start failed, the container conf is in
-        # /etc/nixos-containers/ and needs the workspace dataset to exist —
-        # destroying it here would make the container unbootable.
+        # successful install before calling `systemctl start`. We check for
+        # this sentinel string to distinguish "build/install failed" (safe to
+        # clean up ZFS) from "install succeeded but start failed" (must keep
+        # ZFS dataset so the container can be started manually later).
+        #
+        # Tested against: extra-container 0.13 (NixOS 24.11 / 25.05).
+        # The sentinel string comes from extra-container's Bash script, not
+        # from Nix itself, so it could change in future versions.
+        #
+        # If this heuristic breaks:
+        #   - False negative (string changed): orphaned ZFS datasets accumulate
+        #     because we always clean up, even when the install succeeded.
+        #   - False positive (string removed): ZFS datasets are never cleaned
+        #     up on build failures; they pile up until manually destroyed.
+        #
+        # A more robust alternative: check whether the container conf file
+        # exists at /etc/nixos-containers/<name>.conf after the command exits.
+        # That's a filesystem fact rather than an output-parsing heuristic.
+        # Deferred because:
+        #   1. The current approach works against extra-container 0.13.
+        #   2. The agent runs under ProtectSystem=strict — Path.exists() on
+        #      /etc/nixos-containers/ needs verification on the live appliance
+        #      to confirm the systemd sandbox doesn't block the read. A silent
+        #      False would cause us to always clean up ZFS, even after a
+        #      successful install.
+        #   3. #81 tracks an observability signal that will surface heuristic
+        #      drift before it causes data loss.
+        # Tracked for future implementation: #83.
+        #
+        # To re-verify: run `extra-container create <file> --start` manually
+        # and inspect stdout for the sentinel string.
         install_succeeded = "Installing containers:" in (result.stdout or "")
         if not install_succeeded:
             logfire.warning(
