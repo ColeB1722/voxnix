@@ -339,8 +339,6 @@ async def query_container(name: str, owner: str) -> ContainerInfo:
             )
 
         is_running = state == "running"
-        errors: list[str] = []
-
         # Step 2: fan out metadata queries in parallel.
         # Tailscale and uptime only work for running containers.
         modules_task = asyncio.create_task(_query_modules(name))
@@ -389,7 +387,7 @@ async def query_container(name: str, owner: str) -> ContainerInfo:
             storage_used=storage_used,
             storage_quota=storage_quota,
             storage_available=storage_available,
-            error="; ".join(errors) if errors else None,
+            error=None,
         )
 
         logfire.info(

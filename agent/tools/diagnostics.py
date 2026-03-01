@@ -63,7 +63,7 @@ async def check_host_health() -> DiagnosticResult:
       1. Is extra-container available on PATH?
       2. Is machinectl responsive?
       3. Is the container@.service template present?
-      4. Is /etc/systemd-mutable/system writable?
+      4. Is ZFS available and responsive?
 
     Returns a structured result with all check outcomes. The agent can
     read this to diagnose infrastructure-level problems before they
