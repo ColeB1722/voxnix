@@ -4,11 +4,14 @@ TDD — these tests define the contract for ConversationStore:
   - get() returns empty list for unknown or expired chats
   - append() stores messages and they're retrievable via get()
   - TTL expiry discards stale histories on access
-  - max_turns cap trims oldest messages when exceeded
+  - max_messages cap trims oldest messages when exceeded (memory safety)
   - clear() and clear_all() remove histories explicitly
   - active_chats() counts non-expired entries (with sweep)
   - get() returns a copy — mutations don't affect the store
   - append() with empty list is a no-op
+
+Context window trimming (what the LLM sees) is NOT tested here — that's
+the history_processor's job, tested via agent-level tests.
 
 No external dependencies — all ModelMessage objects are mocked.
 
@@ -222,22 +225,24 @@ class TestTTLExpiry:
             assert result == new_msgs
 
 
-# ── Max turns ─────────────────────────────────────────────────────────────────
+# ── Memory safety cap ─────────────────────────────────────────────────────────
 
 
-class TestMaxTurns:
-    """History is trimmed to max_turns * 2 messages (request + response per turn)."""
+class TestMemoryCap:
+    """Store enforces a hard max_messages cap to prevent unbounded memory growth.
+
+    This is a memory safety concern, NOT context window management.
+    Context window trimming is handled by the agent's history_processors.
+    """
 
     def test_within_limit_no_trimming(self):
-        store = ConversationStore(max_turns=5)
-        # 3 turns = 6 messages — well within limit of 10
+        store = ConversationStore(max_messages=10)
         msgs = _make_messages(6)
         store.append("chat1", msgs)
         assert store.get("chat1") == msgs
 
     def test_exceeding_limit_trims_oldest(self):
-        store = ConversationStore(max_turns=2)
-        # max_turns=2 → max 4 messages
+        store = ConversationStore(max_messages=4)
         turn1 = _make_messages(2)
         turn2 = _make_messages(2)
         turn3 = _make_messages(2)
@@ -252,14 +257,14 @@ class TestMaxTurns:
         assert result == turn2 + turn3
 
     def test_exactly_at_limit_no_trimming(self):
-        store = ConversationStore(max_turns=2)
-        msgs = _make_messages(4)  # exactly max_turns * 2
+        store = ConversationStore(max_messages=4)
+        msgs = _make_messages(4)
         store.append("chat1", msgs)
         assert store.get("chat1") == msgs
 
     def test_single_large_append_trimmed(self):
         """A single append that exceeds the limit should still be trimmed."""
-        store = ConversationStore(max_turns=2)
+        store = ConversationStore(max_messages=4)
         msgs = _make_messages(10)
         store.append("chat1", msgs)
         result = store.get("chat1")
@@ -267,14 +272,14 @@ class TestMaxTurns:
         # Should keep the last 4 messages
         assert result == msgs[-4:]
 
-    def test_max_turns_zero_means_unlimited(self):
-        store = ConversationStore(max_turns=0)
+    def test_max_messages_zero_means_unlimited(self):
+        store = ConversationStore(max_messages=0)
         msgs = _make_messages(100)
         store.append("chat1", msgs)
         assert len(store.get("chat1")) == 100
 
-    def test_max_turns_negative_means_unlimited(self):
-        store = ConversationStore(max_turns=-1)
+    def test_max_messages_negative_means_unlimited(self):
+        store = ConversationStore(max_messages=-1)
         msgs = _make_messages(100)
         store.append("chat1", msgs)
         assert len(store.get("chat1")) == 100
@@ -359,15 +364,17 @@ class TestActiveChats:
 class TestProperties:
     """Verify configuration is exposed correctly."""
 
-    def test_max_turns_property(self):
-        store = ConversationStore(max_turns=42)
-        assert store.max_turns == 42
+    def test_max_messages_property(self):
+        store = ConversationStore(max_messages=42)
+        assert store.max_messages == 42
 
     def test_ttl_seconds_property(self):
         store = ConversationStore(ttl_seconds=300.0)
         assert store.ttl_seconds == 300.0
 
     def test_default_values(self):
+        from agent.chat.history import DEFAULT_MAX_STORE_MESSAGES
+
         store = ConversationStore()
-        assert store.max_turns == 20
+        assert store.max_messages == DEFAULT_MAX_STORE_MESSAGES
         assert store.ttl_seconds == 1800.0

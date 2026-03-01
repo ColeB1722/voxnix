@@ -40,9 +40,9 @@ logger = logging.getLogger(__name__)
 TELEGRAM_MAX_MESSAGE_LEN: int = 4096
 
 # Default conversation history settings.
-# 20 turns ≈ 40 messages — keeps LLM context window manageable.
 # 30 minutes TTL — conversations go stale after inactivity.
-DEFAULT_MAX_TURNS: int = 20
+# Context window trimming is handled by the agent's history_processors,
+# not the store. See agent.py § keep_recent_turns.
 DEFAULT_TTL_SECONDS: float = 1800.0
 
 
@@ -85,7 +85,6 @@ def _get_conversation_store(application: Application) -> ConversationStore:
     store = application.bot_data.get("conversation_store")
     if store is None:
         store = ConversationStore(
-            max_turns=DEFAULT_MAX_TURNS,
             ttl_seconds=DEFAULT_TTL_SECONDS,
         )
         application.bot_data["conversation_store"] = store

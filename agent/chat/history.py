@@ -1,4 +1,4 @@
-"""Per-chat conversation history store with TTL and max-turn support.
+"""Per-chat conversation history store with TTL expiry.
 
 Manages PydanticAI message histories keyed by Telegram chat_id so the agent
 can maintain context across multiple turns within a conversation.
@@ -10,10 +10,11 @@ Design decisions:
   - TTL-based expiry — conversations go stale. A message history from 30 minutes
     ago is probably still relevant; one from 6 hours ago is not. Each chat has
     a last-activity timestamp; histories older than the TTL are discarded on access.
-  - Max-turn cap — prevents unbounded memory growth and keeps the LLM context
-    window manageable. When the cap is exceeded, the oldest turns are dropped.
-    A "turn" is one user message + one assistant response (2 ModelMessage objects),
-    so max_turns=20 means up to 40 messages in the history list.
+  - No turn-trimming — context window management is delegated to PydanticAI's
+    history_processors pipeline (see agent.py § keep_recent_turns). The store
+    accumulates the full raw history; the processor trims what the LLM sees.
+    A hard memory cap (DEFAULT_MAX_STORE_MESSAGES) prevents unbounded growth
+    in the store itself — this is a memory safety concern, not an LLM concern.
   - Thread-safe for asyncio — the bot's event loop is single-threaded, and
     per-chat locks in handlers.py already serialise concurrent messages from
     the same user. No additional locking needed here.
@@ -35,6 +36,20 @@ if TYPE_CHECKING:
 
     from pydantic_ai.messages import ModelMessage
 
+# ── Constants ──────────────────────────────────────────────────────────────────
+
+# Default max turns for the history processor (context window trimming).
+# 20 turns × 2 messages per turn = 40 messages sent to the LLM.
+# Exported for use by agent.py § keep_recent_turns.
+DEFAULT_MAX_TURNS: int = 20
+DEFAULT_MAX_TURN_MESSAGES: int = DEFAULT_MAX_TURNS * 2
+
+# Hard cap on messages stored per chat — memory safety, not LLM context.
+# Set higher than DEFAULT_MAX_TURN_MESSAGES so the store retains some
+# "overflow" history that the history_processor can summarize or inspect
+# if needed in the future. 200 messages ≈ 100 turns — generous ceiling.
+DEFAULT_MAX_STORE_MESSAGES: int = 200
+
 
 @dataclass
 class _ChatHistory:
@@ -45,11 +60,15 @@ class _ChatHistory:
 
 
 class ConversationStore:
-    """Per-chat conversation history with TTL expiry and turn limits.
+    """Per-chat conversation history with TTL expiry.
+
+    Context window trimming is NOT handled here — that's the responsibility
+    of PydanticAI's ``history_processors`` pipeline (see ``agent.py``).
+    This store handles persistence, TTL expiry, and memory-safety capping.
 
     Usage::
 
-        store = ConversationStore(max_turns=20, ttl_seconds=1800)
+        store = ConversationStore(ttl_seconds=1800)
 
         # Before agent.run — get existing history (or empty list if expired/new)
         history = store.get(chat_id="12345")
@@ -58,24 +77,28 @@ class ConversationStore:
         store.append(chat_id="12345", new_messages=result.new_messages())
 
     Args:
-        max_turns: Maximum number of conversation turns to retain per chat.
-                   Each turn is typically 2 messages (user + assistant), so
-                   the message list can hold up to ``max_turns * 2`` entries.
-                   Set to 0 or negative for unlimited (not recommended).
+        max_messages: Hard cap on messages stored per chat. This is a memory
+                      safety limit, not a context window limit. When exceeded,
+                      the oldest messages are dropped from the store.
+                      Set to 0 or negative for unlimited (not recommended).
         ttl_seconds: Seconds of inactivity after which a chat's history is
                      discarded. Resets on every ``get()`` or ``append()`` call.
                      Set to 0 or negative to disable TTL (history never expires).
     """
 
-    def __init__(self, max_turns: int = 20, ttl_seconds: float = 1800.0) -> None:
-        self._max_turns = max_turns
+    def __init__(
+        self,
+        max_messages: int = DEFAULT_MAX_STORE_MESSAGES,
+        ttl_seconds: float = 1800.0,
+    ) -> None:
+        self._max_messages = max_messages
         self._ttl_seconds = ttl_seconds
         self._chats: dict[str, _ChatHistory] = {}
 
     @property
-    def max_turns(self) -> int:
-        """Maximum conversation turns retained per chat."""
-        return self._max_turns
+    def max_messages(self) -> int:
+        """Hard cap on messages stored per chat (memory safety)."""
+        return self._max_messages
 
     @property
     def ttl_seconds(self) -> float:
@@ -113,8 +136,11 @@ class ConversationStore:
         """Append new messages from an agent run to a chat's history.
 
         Creates the history entry if it doesn't exist. Resets the TTL timer.
-        If appending causes the history to exceed ``max_turns``, the oldest
-        messages are trimmed (from the front of the list).
+        If appending causes the stored messages to exceed ``max_messages``,
+        the oldest messages are dropped (memory safety cap).
+
+        Note: context window trimming (what the LLM sees) is handled by
+        PydanticAI's history_processors, not here.
 
         Args:
             chat_id: The Telegram chat ID (stringified).
@@ -136,14 +162,10 @@ class ConversationStore:
         entry.messages.extend(new_messages)
         entry.last_activity = time.monotonic()
 
-        # Enforce the turn limit. Each turn is roughly 2 messages (request +
-        # response), but tool calls can add intermediaries. We cap on total
-        # message count: max_turns * 2 is a reasonable heuristic.
-        if self._max_turns > 0:
-            max_messages = self._max_turns * 2
-            if len(entry.messages) > max_messages:
-                # Drop the oldest messages to get back within the limit.
-                entry.messages = entry.messages[-max_messages:]
+        # Memory safety cap — prevent unbounded growth in long-running sessions.
+        # This is NOT context window management (that's the history_processor's job).
+        if self._max_messages > 0 and len(entry.messages) > self._max_messages:
+            entry.messages = entry.messages[-self._max_messages :]
 
     def clear(self, chat_id: str) -> None:
         """Remove all conversation history for a specific chat.

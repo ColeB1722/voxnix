@@ -36,6 +36,7 @@ from agent.config import VoxnixSettings, get_settings
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
 
+from agent.chat.history import DEFAULT_MAX_TURN_MESSAGES
 from agent.nix_gen.discovery import discover_modules
 from agent.nix_gen.models import ContainerSpec, validate_container_name
 from agent.tools.containers import (
@@ -102,6 +103,27 @@ async def _check_ownership(name: str, owner: str) -> str | None:
     return f"❌ Container `{name}` belongs to another user."
 
 
+# ── History processor ──────────────────────────────────────────────────────────
+
+
+async def keep_recent_turns(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Trim conversation history to the most recent turns before sending to the LLM.
+
+    This is a PydanticAI history_processor — it runs inside agent.run() on every
+    model request, trimming what the model sees without affecting what the
+    ConversationStore persists. The store accumulates the full raw history;
+    this processor keeps the context window manageable.
+
+    The cap is DEFAULT_MAX_TURN_MESSAGES (max_turns * 2). When the history
+    exceeds this, the oldest messages are dropped.
+
+    See PydanticAI docs § Messages and Chat History § history_processors.
+    """
+    if len(messages) > DEFAULT_MAX_TURN_MESSAGES:
+        return messages[-DEFAULT_MAX_TURN_MESSAGES:]
+    return messages
+
+
 # ── Agent definition ───────────────────────────────────────────────────────────
 
 # model=None — the model is resolved at run time by passing get_settings().llm_model_string
@@ -111,10 +133,15 @@ async def _check_ownership(name: str, owner: str) -> str | None:
 # (environment variable checks, provider availability) until the first .run() call.
 # Together with model=None this means importing this module in CI or tests never
 # requires LLM_PROVIDER, LLM_MODEL, or any provider API key to be set.
+#
+# history_processors — delegates context window trimming to PydanticAI's pipeline.
+# The ConversationStore handles persistence and TTL; the history_processor handles
+# "what does the LLM actually see." Clean separation of concerns.
 agent: Agent[VoxnixDeps, str] = Agent(
     model=None,
     deps_type=VoxnixDeps,
     defer_model_check=True,
+    history_processors=[keep_recent_turns],
 )
 
 
