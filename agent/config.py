@@ -40,6 +40,7 @@ Environment variables (all injected by agenix at runtime):
 from __future__ import annotations
 
 import os
+import re
 import warnings
 from functools import lru_cache
 
@@ -152,6 +153,25 @@ class VoxnixSettings(BaseSettings):
 
     See docs/architecture.md § Trust Model — ZFS quotas per user.
     """
+
+    @field_validator("zfs_user_quota")
+    @classmethod
+    def validate_quota_format(cls, v: str) -> str:
+        """Validate that the quota string is a valid ZFS size or 'none'.
+
+        ZFS accepts sizes like '10G', '512M', '1.5T', or 'none' to disable.
+        Invalid values cause cryptic runtime failures in _apply_quota() —
+        catching them here surfaces a clear error at startup. (Fixes #58.)
+        """
+        if v == "none":
+            return v
+        if not re.match(r"^\d+(\.\d+)?[KMGTP]?$", v, re.IGNORECASE):
+            msg = (
+                f"Invalid ZFS quota format: '{v}'. "
+                "Use a ZFS size string (e.g. '10G', '512M', '1T') or 'none' to disable."
+            )
+            raise ValueError(msg)
+        return v
 
     # ── Observability ────────────────────────────────────────────────────────
 

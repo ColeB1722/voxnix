@@ -5,6 +5,11 @@ All CLI calls are mocked; no real ZFS pool is required to run these tests.
 
 The get_settings() call in create_user_datasets (for quota) is mocked via
 a module-level autouse fixture so tests don't require env vars.
+
+Test refactoring (#74): tests use command-matching dispatch functions instead
+of ordered AsyncMock side_effect lists. This makes tests resilient to
+call-order changes — adding an intermediate zfs check or reordering calls
+within a function won't break unrelated tests.
 """
 
 import logging
@@ -17,6 +22,7 @@ from agent.tools.zfs import (
     ZfsQuotaInfo,
     ZfsResult,
     _container_dataset,
+    _ensure_mounted,
     _human_size,
     _user_dataset,
     _workspace_dataset,
@@ -35,9 +41,17 @@ DEFAULT_QUOTA = "10G"
 DEFAULT_POOL = "tank"
 
 USER_DS = f"{DEFAULT_POOL}/users/{OWNER}"
+CONTAINERS_DS = f"{DEFAULT_POOL}/users/{OWNER}/containers"
 CONTAINER_DS = f"{DEFAULT_POOL}/users/{OWNER}/containers/{CONTAINER}"
 WORKSPACE_DS = f"{DEFAULT_POOL}/users/{OWNER}/containers/{CONTAINER}/workspace"
 MOUNT_PATH = f"/{DEFAULT_POOL}/users/{OWNER}/containers/{CONTAINER}/workspace"
+
+USER_MOUNT = f"/{DEFAULT_POOL}/users/{OWNER}"
+CONTAINERS_MOUNT = f"/{DEFAULT_POOL}/users/{OWNER}/containers"
+CONTAINER_MOUNT = f"/{DEFAULT_POOL}/users/{OWNER}/containers/{CONTAINER}"
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 
 def ok(stdout: str = "") -> CommandResult:
@@ -68,6 +82,85 @@ def _mock_get_settings():
         "agent.tools.zfs.get_settings", return_value=_mock_settings(DEFAULT_QUOTA, DEFAULT_POOL)
     ):
         yield
+
+
+# ── Command-matching dispatch helpers ─────────────────────────────────────────
+#
+# Instead of ordered side_effect lists, tests build a dispatch function that
+# inspects the command arguments and returns the appropriate ok()/fail().
+# This makes tests resilient to call-order changes within the implementation.
+#
+# Usage:
+#     mock_run = make_dispatch({
+#         ("list", USER_DS): ok(USER_DS),        # zfs list → dataset exists
+#         ("get", "mounted", USER_DS): ok("yes"), # zfs get mounted → yes
+#         ("set", f"mountpoint={USER_MOUNT}"): ok(),
+#         ("set", f"quota={DEFAULT_QUOTA}"): ok(),
+#     })
+
+
+def _match_key(args: tuple) -> tuple[str, ...] | None:
+    """Extract a matching key from a zfs command invocation.
+
+    Given a full command like ("zfs", "list", "-H", "-o", "name", "tank/users/123"),
+    produces a series of candidate keys from most-specific to least-specific so
+    the dispatch table can match on the relevant parts.
+
+    Returns the first key that could be used, or None if not a zfs command.
+    """
+    if not args or args[0] != "zfs":
+        return None
+    # args[1] is the subcommand: list, create, set, get, mount, destroy
+    return tuple(args[1:])
+
+
+def make_dispatch(
+    table: dict[tuple[str, ...], CommandResult],
+    *,
+    default: CommandResult | None = None,
+) -> AsyncMock:  # noqa: C901
+    """Build an AsyncMock whose side_effect dispatches by command arguments.
+
+    The table maps key tuples to results. A key matches if all elements of the
+    key appear in the command args (in order, but not necessarily contiguous).
+    More specific keys (longer tuples) are tried first.
+
+    Args:
+        table: Mapping of match keys to CommandResult.
+        default: Fallback result if no key matches. If None, raises AssertionError.
+
+    Returns:
+        AsyncMock suitable for patching run_command.
+    """
+    # Sort keys longest-first so more specific matches take priority.
+    sorted_keys = sorted(list(table.keys()), key=lambda k: len(k), reverse=True)
+
+    async def dispatch(*args: object, **kwargs: object) -> CommandResult:
+        str_args = tuple(str(a) for a in args)
+        for key in sorted_keys:
+            # Check that all elements of the key appear in the args in order.
+            idx = 0
+            matched = True
+            for element in key:
+                found = False
+                while idx < len(str_args):
+                    if str_args[idx] == element:
+                        idx += 1
+                        found = True
+                        break
+                    idx += 1
+                if not found:
+                    matched = False
+                    break
+            if matched:
+                return table[key]
+
+        if default is not None:
+            return default
+        raise AssertionError(f"Unexpected command: {str_args!r}")
+
+    mock = AsyncMock(side_effect=dispatch)
+    return mock
 
 
 # ── Path helpers ──────────────────────────────────────────────────────────────
@@ -211,17 +304,181 @@ class TestHumanSize:
         assert _human_size(str(1024 * 1024 * 1024)) == "1.0G"
 
 
+# ── _ensure_mounted ───────────────────────────────────────────────────────────
+
+
+class TestEnsureMounted:
+    """Tests for the mount-verification helper."""
+
+    async def test_already_mounted_returns_success(self):
+        """Dataset already mounted — no mount command issued."""
+        mock_run = make_dispatch(
+            {
+                ("get", "mounted", USER_DS): ok("yes"),
+            }
+        )
+
+        with patch("agent.tools.zfs.run_command", mock_run):
+            result = await _ensure_mounted(USER_DS)
+
+        assert result.success is True
+        assert "already mounted" in result.message
+        # Only one call — the get check. No mount needed.
+        assert mock_run.call_count == 1
+
+    async def test_not_mounted_triggers_mount(self):
+        """Dataset exists but not mounted — zfs mount is called."""
+        mock_run = make_dispatch(
+            {
+                ("get", "mounted", USER_DS): ok("no"),
+                ("mount", USER_DS): ok(),
+            }
+        )
+
+        with patch("agent.tools.zfs.run_command", mock_run):
+            result = await _ensure_mounted(USER_DS)
+
+        assert result.success is True
+        assert "Mounted" in result.message
+        assert mock_run.call_count == 2
+
+    async def test_mount_failure_returns_error(self):
+        """Dataset not mounted and mount command fails — error propagated."""
+        mock_run = make_dispatch(
+            {
+                ("get", "mounted", USER_DS): ok("no"),
+                ("mount", USER_DS): fail("mount failed: directory is not empty"),
+            }
+        )
+
+        with patch("agent.tools.zfs.run_command", mock_run):
+            result = await _ensure_mounted(USER_DS)
+
+        assert result.success is False
+        assert result.error is not None
+        assert "mount failed" in result.error
+
+    async def test_get_mounted_check_failure_returns_error(self):
+        """If we can't even check mount state, return error."""
+        mock_run = make_dispatch(
+            {
+                ("get", "mounted", USER_DS): fail("dataset does not exist"),
+            }
+        )
+
+        with patch("agent.tools.zfs.run_command", mock_run):
+            result = await _ensure_mounted(USER_DS)
+
+        assert result.success is False
+        assert result.error is not None
+
+    async def test_mount_failure_logs_to_logger(self, caplog):
+        """Mount failure is logged via the standard logger."""
+        mock_run = make_dispatch(
+            {
+                ("get", "mounted", USER_DS): ok("no"),
+                ("mount", USER_DS): fail("permission denied"),
+            }
+        )
+
+        with (
+            caplog.at_level(logging.ERROR, logger="agent.tools.zfs"),
+            patch("agent.tools.zfs.run_command", mock_run),
+        ):
+            await _ensure_mounted(USER_DS)
+
+        assert any("_ensure_mounted failed" in r.message for r in caplog.records)
+
+
+# ── _ensure_dataset (via create_container_dataset intermediates) ──────────────
+
+
+class TestEnsureDataset:
+    """Tests for _ensure_dataset, exercised indirectly through create_container_dataset.
+
+    _ensure_dataset is a private function that handles intermediate datasets
+    (containers/, containers/<name>/). We test its behavior by verifying the
+    full container dataset creation path, which calls _ensure_dataset for each
+    intermediate level.
+    """
+
+    async def test_existing_unmounted_dataset_gets_mounted(self):
+        """An intermediate dataset that exists but is unmounted gets mounted."""
+        mock_run = make_dispatch(
+            {
+                # create_user_datasets: user exists, mounted, quota ok
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("yes"),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+                # create_container_dataset: workspace doesn't exist
+                ("list", WORKSPACE_DS): fail("not found"),
+                # _ensure_dataset for containers/: exists but not mounted
+                ("list", CONTAINERS_DS): ok(CONTAINERS_DS),
+                ("get", "mounted", CONTAINERS_DS): ok("no"),
+                ("mount", CONTAINERS_DS): ok(),
+                # _ensure_dataset for containers/<name>: exists but not mounted
+                ("list", CONTAINER_DS): ok(CONTAINER_DS),
+                ("get", "mounted", CONTAINER_DS): ok("no"),
+                ("mount", CONTAINER_DS): ok(),
+                # workspace create
+                ("create", WORKSPACE_DS): ok(),
+            }
+        )
+
+        with patch("agent.tools.zfs.run_command", mock_run):
+            result = await create_container_dataset(OWNER, CONTAINER)
+
+        assert result.success is True
+        assert result.mount_path == MOUNT_PATH
+
+        # Verify mount was called for the two intermediate datasets.
+        mount_calls = [c for c in mock_run.call_args_list if len(c[0]) >= 2 and c[0][1] == "mount"]
+        assert len(mount_calls) == 2
+
+    async def test_existing_mounted_dataset_skips_mount(self):
+        """An intermediate dataset that is already mounted skips the mount call."""
+        mock_run = make_dispatch(
+            {
+                # create_user_datasets
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("yes"),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+                # workspace doesn't exist
+                ("list", WORKSPACE_DS): fail("not found"),
+                # containers/ exists and is mounted
+                ("list", CONTAINERS_DS): ok(CONTAINERS_DS),
+                ("get", "mounted", CONTAINERS_DS): ok("yes"),
+                # containers/<name> doesn't exist — create it
+                ("list", CONTAINER_DS): fail("not found"),
+                ("create", CONTAINER_DS): ok(),
+                # workspace create
+                ("create", WORKSPACE_DS): ok(),
+            }
+        )
+
+        with patch("agent.tools.zfs.run_command", mock_run):
+            result = await create_container_dataset(OWNER, CONTAINER)
+
+        assert result.success is True
+
+        # No mount calls — containers/ was already mounted, container_ds was freshly created.
+        mount_calls = [c for c in mock_run.call_args_list if len(c[0]) >= 2 and c[0][1] == "mount"]
+        assert len(mount_calls) == 0
+
+
 # ── create_user_datasets ──────────────────────────────────────────────────────
 
 
 class TestCreateUserDatasets:
     async def test_creates_dataset_when_missing(self):
-        mock_run = AsyncMock(
-            side_effect=[
-                fail("does not exist"),  # zfs list — not found
-                ok(),  # zfs create -o mountpoint=...
-                ok(),  # zfs set quota=
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): fail("does not exist"),
+                ("create", USER_DS): ok(),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+            }
         )
 
         with patch("agent.tools.zfs.run_command", mock_run):
@@ -230,24 +487,26 @@ class TestCreateUserDatasets:
         assert result.success is True
         assert result.dataset == USER_DS
 
-        # First call: zfs list (check existence) — should fail
-        # Second call: zfs create -o mountpoint=... — should succeed
-        # Third call: zfs set quota= — should succeed
-        assert mock_run.call_count == 3
-        create_call = mock_run.call_args_list[1]
-        assert create_call[0][0] == "zfs"
-        assert create_call[0][1] == "create"
-        assert create_call[0][2] == "-o"
-        assert create_call[0][3].startswith("mountpoint=")
-        assert create_call[0][4] == USER_DS
+        # Verify create was called with explicit mountpoint.
+        create_calls = [
+            c for c in mock_run.call_args_list if len(c[0]) >= 2 and c[0][1] == "create"
+        ]
+        assert len(create_calls) == 1
+        create_args = create_calls[0][0]
+        assert create_args[0] == "zfs"
+        assert create_args[1] == "create"
+        assert "-o" in create_args
+        assert any("mountpoint=" in str(a) for a in create_args)
+        assert create_args[-1] == USER_DS
 
-    async def test_idempotent_when_exists(self):
-        mock_run = AsyncMock(
-            side_effect=[
-                ok(USER_DS),  # zfs list — exists
-                ok(),  # zfs set mountpoint= (always applied)
-                ok(),  # zfs set quota= (always applied)
-            ]
+    async def test_idempotent_when_exists_and_mounted(self):
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("yes"),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+            }
         )
 
         with patch("agent.tools.zfs.run_command", mock_run):
@@ -255,11 +514,52 @@ class TestCreateUserDatasets:
 
         assert result.success is True
         assert "already exists" in result.message
-        # Three calls: existence check + mountpoint set + quota application.
-        assert mock_run.call_count == 3
+
+    async def test_existing_unmounted_dataset_gets_mounted(self):
+        """User dataset exists but is not mounted — mount is triggered."""
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("no"),
+                ("mount", USER_DS): ok(),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+            }
+        )
+
+        with patch("agent.tools.zfs.run_command", mock_run):
+            result = await create_user_datasets(OWNER)
+
+        assert result.success is True
+
+        # Verify mount was called.
+        mount_calls = [c for c in mock_run.call_args_list if len(c[0]) >= 2 and c[0][1] == "mount"]
+        assert len(mount_calls) == 1
+
+    async def test_existing_unmounted_mount_failure_returns_error(self):
+        """User dataset exists, unmounted, and mount fails — error returned."""
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("no"),
+                ("mount", USER_DS): fail("mount failed"),
+            }
+        )
+
+        with patch("agent.tools.zfs.run_command", mock_run):
+            result = await create_user_datasets(OWNER)
+
+        assert result.success is False
+        assert "could not be mounted" in result.message
 
     async def test_create_failure_returns_error(self):
-        mock_run = AsyncMock(side_effect=[fail("not found"), fail("permission denied")])
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): fail("not found"),
+                ("create", USER_DS): fail("permission denied"),
+            }
+        )
 
         with patch("agent.tools.zfs.run_command", mock_run):
             result = await create_user_datasets(OWNER)
@@ -269,7 +569,12 @@ class TestCreateUserDatasets:
         assert "permission denied" in result.error
 
     async def test_create_failure_logs_to_logger(self, caplog):
-        mock_run = AsyncMock(side_effect=[fail("not found"), fail("no space")])
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): fail("not found"),
+                ("create", USER_DS): fail("no space"),
+            }
+        )
 
         with (
             caplog.at_level(logging.ERROR, logger="agent.tools.zfs"),
@@ -281,68 +586,82 @@ class TestCreateUserDatasets:
 
     async def test_uses_explicit_mountpoint_on_create(self):
         """Dataset is created with an explicit mountpoint so it auto-mounts."""
-        mock_run = AsyncMock(
-            side_effect=[
-                fail("not found"),  # zfs list
-                ok(),  # zfs create -o mountpoint=...
-                ok(),  # zfs set quota
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): fail("not found"),
+                ("create", USER_DS): ok(),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+            }
         )
 
         with patch("agent.tools.zfs.run_command", mock_run):
             await create_user_datasets(OWNER)
 
-        create_call = mock_run.call_args_list[1]
-        assert create_call[0][0] == "zfs"
-        assert create_call[0][1] == "create"
-        assert "-o" in create_call[0]
-        assert any("mountpoint=" in arg for arg in create_call[0])
-        assert f"/tank/users/{OWNER}" in " ".join(create_call[0])
+        create_calls = [
+            c for c in mock_run.call_args_list if len(c[0]) >= 2 and c[0][1] == "create"
+        ]
+        assert len(create_calls) == 1
+        create_args = create_calls[0][0]
+        assert "-o" in create_args
+        assert any("mountpoint=" in str(a) for a in create_args)
+        assert f"/tank/users/{OWNER}" in " ".join(str(a) for a in create_args)
 
     async def test_quota_applied_on_new_dataset(self):
         """Quota is applied after dataset creation."""
-        mock_run = AsyncMock(
-            side_effect=[
-                fail("not found"),  # zfs list
-                ok(),  # zfs create -o mountpoint=...
-                ok(),  # zfs set quota
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): fail("not found"),
+                ("create", USER_DS): ok(),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+            }
         )
 
         with patch("agent.tools.zfs.run_command", mock_run):
             result = await create_user_datasets(OWNER)
 
         assert result.success is True
-        # quota is call [2]: list, create, quota
-        quota_call = mock_run.call_args_list[2]
-        assert quota_call[0] == ("zfs", "set", f"quota={DEFAULT_QUOTA}", USER_DS)
+
+        # Verify quota set was called.
+        quota_calls = [
+            c
+            for c in mock_run.call_args_list
+            if len(c[0]) >= 3 and c[0][1] == "set" and "quota=" in str(c[0][2])
+        ]
+        assert len(quota_calls) == 1
+        assert quota_calls[0][0] == ("zfs", "set", f"quota={DEFAULT_QUOTA}", USER_DS)
 
     async def test_quota_applied_on_existing_dataset(self):
         """Quota is reapplied to existing datasets (keeps config in sync)."""
-        mock_run = AsyncMock(
-            side_effect=[
-                ok(USER_DS),  # zfs list — exists
-                ok(),  # zfs set mountpoint= (always applied)
-                ok(),  # zfs set quota
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("yes"),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+            }
         )
 
         with patch("agent.tools.zfs.run_command", mock_run):
             result = await create_user_datasets(OWNER)
 
         assert result.success is True
-        # quota is call [2]: list, mountpoint, quota
-        quota_call = mock_run.call_args_list[2]
-        assert quota_call[0] == ("zfs", "set", f"quota={DEFAULT_QUOTA}", USER_DS)
+
+        quota_calls = [
+            c
+            for c in mock_run.call_args_list
+            if len(c[0]) >= 3 and c[0][1] == "set" and "quota=" in str(c[0][2])
+        ]
+        assert len(quota_calls) == 1
+        assert quota_calls[0][0] == ("zfs", "set", f"quota={DEFAULT_QUOTA}", USER_DS)
 
     async def test_custom_quota_from_settings(self):
         """Quota value comes from VoxnixSettings.zfs_user_quota."""
-        mock_run = AsyncMock(
-            side_effect=[
-                fail("not found"),
-                ok(),  # create -o mountpoint=...
-                ok(),  # quota
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): fail("not found"),
+                ("create", USER_DS): ok(),
+                ("set", "quota=50G", USER_DS): ok(),
+            }
         )
 
         with (
@@ -351,18 +670,22 @@ class TestCreateUserDatasets:
         ):
             await create_user_datasets(OWNER)
 
-        # quota is call [2]: list, create, quota
-        quota_call = mock_run.call_args_list[2]
-        assert quota_call[0] == ("zfs", "set", "quota=50G", USER_DS)
+        quota_calls = [
+            c
+            for c in mock_run.call_args_list
+            if len(c[0]) >= 3 and c[0][1] == "set" and "quota=" in str(c[0][2])
+        ]
+        assert len(quota_calls) == 1
+        assert quota_calls[0][0] == ("zfs", "set", "quota=50G", USER_DS)
 
     async def test_quota_failure_on_new_dataset_returns_failure(self, caplog):
         """Quota failure on a newly created dataset returns success=False."""
-        mock_run = AsyncMock(
-            side_effect=[
-                fail("not found"),  # zfs list
-                ok(),  # zfs create -o mountpoint=...
-                fail("invalid quota"),  # zfs set quota — fails
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): fail("not found"),
+                ("create", USER_DS): ok(),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): fail("invalid quota"),
+            }
         )
 
         with (
@@ -377,12 +700,13 @@ class TestCreateUserDatasets:
 
     async def test_quota_failure_on_existing_dataset_returns_failure(self, caplog):
         """Quota failure on an already-existing dataset returns success=False."""
-        mock_run = AsyncMock(
-            side_effect=[
-                ok(USER_DS),  # zfs list → exists
-                ok(),  # zfs set mountpoint
-                fail("permission denied"),  # zfs set quota — fails
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("yes"),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): fail("permission denied"),
+            }
         )
 
         with (
@@ -397,12 +721,12 @@ class TestCreateUserDatasets:
 
     async def test_quota_in_success_message(self):
         """Success message mentions the quota value."""
-        mock_run = AsyncMock(
-            side_effect=[
-                fail("not found"),
-                ok(),  # create -o mountpoint=...
-                ok(),  # quota
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): fail("not found"),
+                ("create", USER_DS): ok(),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+            }
         )
 
         with patch("agent.tools.zfs.run_command", mock_run):
@@ -417,18 +741,23 @@ class TestCreateUserDatasets:
 class TestCreateContainerDataset:
     async def test_creates_workspace_dataset(self):
         """Full success path: user exists, workspace doesn't, create succeeds."""
-        mock_run = AsyncMock(
-            side_effect=[
-                ok(USER_DS),  # create_user_datasets: zfs list → exists
-                ok(),  # create_user_datasets: zfs set mountpoint
-                ok(),  # create_user_datasets: zfs set quota
-                fail("nope"),  # zfs list workspace → doesn't exist
-                fail("nope"),  # zfs list containers/ → doesn't exist
-                ok(),  # zfs create containers/ with mountpoint
-                fail("nope"),  # zfs list containers/<name> → doesn't exist
-                ok(),  # zfs create containers/<name> with mountpoint
-                ok(),  # zfs create workspace with mountpoint
-            ]
+        mock_run = make_dispatch(
+            {
+                # create_user_datasets: user exists and mounted
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("yes"),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+                # workspace doesn't exist
+                ("list", WORKSPACE_DS): fail("nope"),
+                # intermediates don't exist — create them
+                ("list", CONTAINERS_DS): fail("nope"),
+                ("create", CONTAINERS_DS): ok(),
+                ("list", CONTAINER_DS): fail("nope"),
+                ("create", CONTAINER_DS): ok(),
+                # workspace create
+                ("create", WORKSPACE_DS): ok(),
+            }
         )
 
         with patch("agent.tools.zfs.run_command", mock_run):
@@ -438,16 +767,20 @@ class TestCreateContainerDataset:
         assert result.mount_path == MOUNT_PATH
         assert result.dataset == WORKSPACE_DS
 
-    async def test_idempotent_when_workspace_exists(self):
-        """Workspace dataset already exists — no create needed."""
-        mock_run = AsyncMock(
-            side_effect=[
-                ok(USER_DS),  # create_user_datasets: exists
-                ok(),  # create_user_datasets: set mountpoint
-                ok(),  # create_user_datasets: quota
-                ok(WORKSPACE_DS),  # workspace check: exists
-                ok(),  # zfs set mountpoint on existing workspace
-            ]
+    async def test_idempotent_when_workspace_exists_and_mounted(self):
+        """Workspace dataset already exists and is mounted — no create needed."""
+        mock_run = make_dispatch(
+            {
+                # create_user_datasets
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("yes"),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+                # workspace exists
+                ("list", WORKSPACE_DS): ok(WORKSPACE_DS),
+                ("set", f"mountpoint={MOUNT_PATH}", WORKSPACE_DS): ok(),
+                ("get", "mounted", WORKSPACE_DS): ok("yes"),
+            }
         )
 
         with patch("agent.tools.zfs.run_command", mock_run):
@@ -457,13 +790,67 @@ class TestCreateContainerDataset:
         assert result.mount_path == MOUNT_PATH
         assert "already exists" in result.message
 
+    async def test_existing_unmounted_workspace_gets_mounted(self):
+        """Workspace exists but isn't mounted — mount is triggered before returning."""
+        mock_run = make_dispatch(
+            {
+                # create_user_datasets
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("yes"),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+                # workspace exists but not mounted
+                ("list", WORKSPACE_DS): ok(WORKSPACE_DS),
+                ("set", f"mountpoint={MOUNT_PATH}", WORKSPACE_DS): ok(),
+                ("get", "mounted", WORKSPACE_DS): ok("no"),
+                ("mount", WORKSPACE_DS): ok(),
+            }
+        )
+
+        with patch("agent.tools.zfs.run_command", mock_run):
+            result = await create_container_dataset(OWNER, CONTAINER)
+
+        assert result.success is True
+        assert result.mount_path == MOUNT_PATH
+
+        # Verify mount was called for the workspace.
+        mount_calls = [
+            c
+            for c in mock_run.call_args_list
+            if len(c[0]) >= 2 and c[0][1] == "mount" and WORKSPACE_DS in c[0]
+        ]
+        assert len(mount_calls) == 1
+
+    async def test_existing_workspace_mount_failure_returns_error(self):
+        """Workspace exists, not mounted, mount fails — error propagated."""
+        mock_run = make_dispatch(
+            {
+                # create_user_datasets
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("yes"),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+                # workspace exists but mount fails
+                ("list", WORKSPACE_DS): ok(WORKSPACE_DS),
+                ("set", f"mountpoint={MOUNT_PATH}", WORKSPACE_DS): ok(),
+                ("get", "mounted", WORKSPACE_DS): ok("no"),
+                ("mount", WORKSPACE_DS): fail("mount point busy"),
+            }
+        )
+
+        with patch("agent.tools.zfs.run_command", mock_run):
+            result = await create_container_dataset(OWNER, CONTAINER)
+
+        assert result.success is False
+        assert "could not be mounted" in result.message
+
     async def test_user_dataset_creation_failure_propagates(self):
         """If user dataset creation fails, container dataset creation aborts."""
-        mock_run = AsyncMock(
-            side_effect=[
-                fail("not found"),  # create_user_datasets: zfs list → not found
-                fail("permission denied"),  # create_user_datasets: zfs create → fails
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): fail("not found"),
+                ("create", USER_DS): fail("permission denied"),
+            }
         )
 
         with patch("agent.tools.zfs.run_command", mock_run):
@@ -474,18 +861,23 @@ class TestCreateContainerDataset:
 
     async def test_workspace_create_failure(self):
         """User exists, but workspace dataset creation fails."""
-        mock_run = AsyncMock(
-            side_effect=[
-                ok(USER_DS),  # user exists
-                ok(),  # set mountpoint on user ds
-                ok(),  # quota
-                fail("nope"),  # workspace doesn't exist
-                fail("nope"),  # containers/ doesn't exist
-                ok(),  # create containers/
-                fail("nope"),  # containers/<name> doesn't exist
-                ok(),  # create containers/<name>
-                fail("quota"),  # workspace create fails
-            ]
+        mock_run = make_dispatch(
+            {
+                # create_user_datasets
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("yes"),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+                # workspace doesn't exist
+                ("list", WORKSPACE_DS): fail("nope"),
+                # intermediates
+                ("list", CONTAINERS_DS): fail("nope"),
+                ("create", CONTAINERS_DS): ok(),
+                ("list", CONTAINER_DS): fail("nope"),
+                ("create", CONTAINER_DS): ok(),
+                # workspace create fails
+                ("create", WORKSPACE_DS): fail("quota exceeded"),
+            }
         )
 
         with patch("agent.tools.zfs.run_command", mock_run):
@@ -495,18 +887,19 @@ class TestCreateContainerDataset:
         assert result.error is not None
 
     async def test_workspace_create_failure_logs_to_logger(self, caplog):
-        mock_run = AsyncMock(
-            side_effect=[
-                ok(USER_DS),
-                ok(),  # set mountpoint
-                ok(),  # quota
-                fail("nope"),  # workspace check
-                fail("nope"),  # containers/ check
-                ok(),  # create containers/
-                fail("nope"),  # containers/<name> check
-                ok(),  # create containers/<name>
-                fail("out of space"),  # workspace create fails
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("yes"),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+                ("list", WORKSPACE_DS): fail("nope"),
+                ("list", CONTAINERS_DS): fail("nope"),
+                ("create", CONTAINERS_DS): ok(),
+                ("list", CONTAINER_DS): fail("nope"),
+                ("create", CONTAINER_DS): ok(),
+                ("create", WORKSPACE_DS): fail("out of space"),
+            }
         )
 
         with (
@@ -519,47 +912,52 @@ class TestCreateContainerDataset:
 
     async def test_creates_full_hierarchy_with_explicit_mountpoints(self):
         """Each dataset level is created with an explicit mountpoint."""
-        mock_run = AsyncMock(
-            side_effect=[
-                ok(USER_DS),  # user exists
-                ok(),  # set mountpoint on user ds
-                ok(),  # quota
-                fail("nope"),  # workspace check
-                fail("nope"),  # containers/ check
-                ok(),  # create containers/
-                fail("nope"),  # containers/<name> check
-                ok(),  # create containers/<name>
-                ok(),  # create workspace
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("yes"),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+                ("list", WORKSPACE_DS): fail("nope"),
+                ("list", CONTAINERS_DS): fail("nope"),
+                ("create", CONTAINERS_DS): ok(),
+                ("list", CONTAINER_DS): fail("nope"),
+                ("create", CONTAINER_DS): ok(),
+                ("create", WORKSPACE_DS): ok(),
+            }
         )
 
         with patch("agent.tools.zfs.run_command", mock_run):
             await create_container_dataset(OWNER, CONTAINER)
 
-        # Verify workspace create uses explicit mountpoint
-        workspace_create = mock_run.call_args_list[8]
-        assert workspace_create[0][0] == "zfs"
-        assert workspace_create[0][1] == "create"
-        assert "-o" in workspace_create[0]
-        assert workspace_create[0][-1] == WORKSPACE_DS
-        # Mountpoint must equal the expected host path
-        mp_arg = next(a for a in workspace_create[0] if a.startswith("mountpoint="))
+        # Verify workspace create uses explicit mountpoint.
+        workspace_creates = [
+            c
+            for c in mock_run.call_args_list
+            if len(c[0]) >= 2 and c[0][1] == "create" and WORKSPACE_DS in c[0]
+        ]
+        assert len(workspace_creates) == 1
+        ws_args = workspace_creates[0][0]
+        assert "-o" in ws_args
+        # Mountpoint must equal the expected host path.
+        mp_arg = next(a for a in ws_args if str(a).startswith("mountpoint="))
         assert mp_arg == f"mountpoint={MOUNT_PATH}"
 
     async def test_mount_path_matches_storage_layout(self):
         """Mount path must match the disko layout in storage.nix."""
-        mock_run = AsyncMock(
-            side_effect=[
-                ok(USER_DS),
-                ok(),  # set mountpoint
-                ok(),  # quota
-                fail("nope"),  # workspace check
-                fail("nope"),  # containers/ check
-                ok(),  # create containers/
-                fail("nope"),  # containers/<name> check
-                ok(),  # create containers/<name>
-                ok(),  # create workspace
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("yes"),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+                ("list", WORKSPACE_DS): fail("nope"),
+                ("list", CONTAINERS_DS): fail("nope"),
+                ("create", CONTAINERS_DS): ok(),
+                ("list", CONTAINER_DS): fail("nope"),
+                ("create", CONTAINER_DS): ok(),
+                ("create", WORKSPACE_DS): ok(),
+            }
         )
 
         with patch("agent.tools.zfs.run_command", mock_run):
@@ -577,11 +975,11 @@ class TestCreateContainerDataset:
 
 class TestDestroyContainerDataset:
     async def test_destroys_existing_dataset(self):
-        mock_run = AsyncMock(
-            side_effect=[
-                ok(CONTAINER_DS),  # zfs list → exists
-                ok(),  # zfs destroy -r → success
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", CONTAINER_DS): ok(CONTAINER_DS),
+                ("destroy", CONTAINER_DS): ok(),
+            }
         )
 
         with patch("agent.tools.zfs.run_command", mock_run):
@@ -591,17 +989,29 @@ class TestDestroyContainerDataset:
         assert result.dataset == CONTAINER_DS
 
     async def test_calls_zfs_destroy_recursive(self):
-        mock_run = AsyncMock(side_effect=[ok(CONTAINER_DS), ok()])
+        mock_run = make_dispatch(
+            {
+                ("list", CONTAINER_DS): ok(CONTAINER_DS),
+                ("destroy", "-r", CONTAINER_DS): ok(),
+            }
+        )
 
         with patch("agent.tools.zfs.run_command", mock_run):
             await destroy_container_dataset(OWNER, CONTAINER)
 
-        destroy_call = mock_run.call_args_list[1]
-        assert destroy_call[0] == ("zfs", "destroy", "-r", CONTAINER_DS)
+        destroy_calls = [
+            c for c in mock_run.call_args_list if len(c[0]) >= 2 and c[0][1] == "destroy"
+        ]
+        assert len(destroy_calls) == 1
+        assert destroy_calls[0][0] == ("zfs", "destroy", "-r", CONTAINER_DS)
 
     async def test_succeeds_when_dataset_does_not_exist(self):
         """No dataset to destroy — treat as success (already clean)."""
-        mock_run = AsyncMock(return_value=fail("does not exist"))
+        mock_run = make_dispatch(
+            {
+                ("list", CONTAINER_DS): fail("does not exist"),
+            }
+        )
 
         with patch("agent.tools.zfs.run_command", mock_run):
             result = await destroy_container_dataset(OWNER, CONTAINER)
@@ -612,11 +1022,11 @@ class TestDestroyContainerDataset:
         assert mock_run.call_count == 1
 
     async def test_destroy_failure_returns_error(self):
-        mock_run = AsyncMock(
-            side_effect=[
-                ok(CONTAINER_DS),  # exists
-                fail("busy"),  # destroy fails
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", CONTAINER_DS): ok(CONTAINER_DS),
+                ("destroy", CONTAINER_DS): fail("busy"),
+            }
         )
 
         with patch("agent.tools.zfs.run_command", mock_run):
@@ -627,7 +1037,12 @@ class TestDestroyContainerDataset:
         assert "busy" in result.error
 
     async def test_destroy_failure_logs_to_logger(self, caplog):
-        mock_run = AsyncMock(side_effect=[ok(CONTAINER_DS), fail("dataset is busy")])
+        mock_run = make_dispatch(
+            {
+                ("list", CONTAINER_DS): ok(CONTAINER_DS),
+                ("destroy", CONTAINER_DS): fail("dataset is busy"),
+            }
+        )
 
         with (
             caplog.at_level(logging.ERROR, logger="agent.tools.zfs"),
@@ -639,7 +1054,12 @@ class TestDestroyContainerDataset:
 
     async def test_destroys_container_root_not_user_root(self):
         """Only the container subtree is destroyed, not the user root."""
-        mock_run = AsyncMock(side_effect=[ok(CONTAINER_DS), ok()])
+        mock_run = make_dispatch(
+            {
+                ("list", CONTAINER_DS): ok(CONTAINER_DS),
+                ("destroy", CONTAINER_DS): ok(),
+            }
+        )
 
         with patch("agent.tools.zfs.run_command", mock_run):
             result = await destroy_container_dataset(OWNER, CONTAINER)
@@ -649,8 +1069,11 @@ class TestDestroyContainerDataset:
         assert result.dataset != USER_DS
 
         # The destroy command should target the container dataset.
-        destroy_call = mock_run.call_args_list[1]
-        assert CONTAINER in destroy_call[0][-1]
+        destroy_calls = [
+            c for c in mock_run.call_args_list if len(c[0]) >= 2 and c[0][1] == "destroy"
+        ]
+        assert len(destroy_calls) == 1
+        assert CONTAINER in destroy_calls[0][0][-1]
 
 
 # ── get_user_storage_info ─────────────────────────────────────────────────────
@@ -741,32 +1164,38 @@ class TestApplyQuota:
 
     async def test_quota_set_command_format(self):
         """Verifies the exact zfs set command format."""
-        mock_run = AsyncMock(
-            side_effect=[
-                ok(USER_DS),  # exists
-                ok(),  # zfs set mountpoint
-                ok(),  # zfs set quota
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("yes"),
+                ("set", f"quota={DEFAULT_QUOTA}", USER_DS): ok(),
+            }
         )
 
         with patch("agent.tools.zfs.run_command", mock_run):
             await create_user_datasets(OWNER)
 
-        # quota is call [2]: list, mountpoint, quota
-        quota_call = mock_run.call_args_list[2]
-        assert quota_call[0][0] == "zfs"
-        assert quota_call[0][1] == "set"
-        assert quota_call[0][2] == f"quota={DEFAULT_QUOTA}"
-        assert quota_call[0][3] == USER_DS
+        quota_calls = [
+            c
+            for c in mock_run.call_args_list
+            if len(c[0]) >= 3 and c[0][1] == "set" and "quota=" in str(c[0][2])
+        ]
+        assert len(quota_calls) == 1
+        assert quota_calls[0][0][0] == "zfs"
+        assert quota_calls[0][0][1] == "set"
+        assert quota_calls[0][0][2] == f"quota={DEFAULT_QUOTA}"
+        assert quota_calls[0][0][3] == USER_DS
 
     async def test_none_quota_disables_limit(self):
         """Setting quota to 'none' disables the limit."""
-        mock_run = AsyncMock(
-            side_effect=[
-                ok(USER_DS),
-                ok(),  # mountpoint
-                ok(),  # quota
-            ]
+        mock_run = make_dispatch(
+            {
+                ("list", USER_DS): ok(USER_DS),
+                ("set", f"mountpoint={USER_MOUNT}", USER_DS): ok(),
+                ("get", "mounted", USER_DS): ok("yes"),
+                ("set", "quota=none", USER_DS): ok(),
+            }
         )
 
         with (
@@ -776,6 +1205,11 @@ class TestApplyQuota:
             result = await create_user_datasets(OWNER)
 
         assert result.success is True
-        # quota is call [2]
-        quota_call = mock_run.call_args_list[2]
-        assert quota_call[0][2] == "quota=none"
+
+        quota_calls = [
+            c
+            for c in mock_run.call_args_list
+            if len(c[0]) >= 3 and c[0][1] == "set" and "quota=" in str(c[0][2])
+        ]
+        assert len(quota_calls) == 1
+        assert quota_calls[0][0][2] == "quota=none"
