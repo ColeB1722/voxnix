@@ -417,6 +417,118 @@ class TestCreateContainer:
         assert result.success is False
         assert any("orphaned ZFS dataset" in r.message for r in caplog.records)
 
+    async def test_heuristic_mismatch_warning_on_nonempty_stdout_without_sentinel(self):
+        """When creation fails with non-empty stdout but no 'Installing containers:'
+        sentinel, a logfire warning should fire to surface potential heuristic drift.
+
+        This is the observability signal for #81 — if extra-container changes its
+        output format, this warning surfaces in traces before it causes data loss.
+        """
+        with (
+            patch(
+                "agent.tools.containers.create_container_dataset",
+                AsyncMock(return_value=zfs_ok()),
+            ),
+            patch("agent.tools.containers.generate_container_expr", return_value="..."),
+            patch(
+                "agent.tools.containers.run_command",
+                # Non-empty stdout but no sentinel — heuristic mismatch
+                AsyncMock(
+                    return_value=CommandResult(
+                        stdout="some unexpected output from extra-container",
+                        stderr="",
+                        returncode=1,
+                    )
+                ),
+            ),
+            patch(
+                "agent.tools.containers.destroy_container_dataset",
+                AsyncMock(return_value=zfs_destroy_ok()),
+            ),
+            patch("agent.tools.containers.logfire") as mock_logfire,
+        ):
+            result = await create_container(TEST_SPEC, flake_path=FLAKE_PATH)
+
+        assert result.success is False
+        # Verify the heuristic mismatch warning was emitted
+        warning_calls = [
+            call
+            for call in mock_logfire.warning.call_args_list
+            if "heuristic mismatch" in str(call)
+        ]
+        assert len(warning_calls) >= 1, "Expected a logfire warning about heuristic mismatch"
+
+    async def test_no_heuristic_mismatch_warning_on_empty_stdout(self):
+        """When creation fails with empty stdout, no heuristic mismatch warning fires.
+
+        Empty stdout means the build failed before producing any output — that's
+        not a heuristic drift scenario, it's a straightforward build failure.
+        """
+        with (
+            patch(
+                "agent.tools.containers.create_container_dataset",
+                AsyncMock(return_value=zfs_ok()),
+            ),
+            patch("agent.tools.containers.generate_container_expr", return_value="..."),
+            patch(
+                "agent.tools.containers.run_command",
+                AsyncMock(
+                    return_value=CommandResult(stdout="", stderr="build failed", returncode=1)
+                ),
+            ),
+            patch(
+                "agent.tools.containers.destroy_container_dataset",
+                AsyncMock(return_value=zfs_destroy_ok()),
+            ),
+            patch("agent.tools.containers.logfire") as mock_logfire,
+        ):
+            result = await create_container(TEST_SPEC, flake_path=FLAKE_PATH)
+
+        assert result.success is False
+        # No heuristic mismatch warning should fire
+        warning_calls = [
+            call
+            for call in mock_logfire.warning.call_args_list
+            if "heuristic mismatch" in str(call)
+        ]
+        assert len(warning_calls) == 0, "Should not warn about heuristic mismatch on empty stdout"
+
+    async def test_no_heuristic_mismatch_warning_when_sentinel_present(self):
+        """When the sentinel IS present (install succeeded, start failed),
+        no heuristic mismatch warning should fire — the heuristic is working.
+        """
+        with (
+            patch(
+                "agent.tools.containers.create_container_dataset",
+                AsyncMock(return_value=zfs_ok()),
+            ),
+            patch("agent.tools.containers.generate_container_expr", return_value="..."),
+            patch(
+                "agent.tools.containers.run_command",
+                AsyncMock(
+                    return_value=CommandResult(
+                        stdout="Installing containers:\ndev\nStarting failed",
+                        stderr="",
+                        returncode=1,
+                    )
+                ),
+            ),
+            patch(
+                "agent.tools.containers.destroy_container_dataset",
+                AsyncMock(return_value=zfs_destroy_ok()),
+            ),
+            patch("agent.tools.containers.logfire") as mock_logfire,
+        ):
+            result = await create_container(TEST_SPEC, flake_path=FLAKE_PATH)
+
+        assert result.success is False
+        warning_calls = [
+            call
+            for call in mock_logfire.warning.call_args_list
+            if "heuristic mismatch" in str(call)
+        ]
+        assert len(warning_calls) == 0, "Should not warn when sentinel is present"
+
 
 # ── destroy_container ─────────────────────────────────────────────────────────
 

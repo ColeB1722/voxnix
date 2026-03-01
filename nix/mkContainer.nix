@@ -84,6 +84,9 @@ let
       # The agent uses this for ownership verification.
       environment.variables.VOXNIX_OWNER = validSpec.owner;
       environment.variables.VOXNIX_CONTAINER = validSpec.name;
+      # Space-separated list of installed modules — used by the agent's
+      # container query tool (#54) to report what's inside a container.
+      environment.variables.VOXNIX_MODULES = builtins.concatStringsSep " " validSpec.modules;
     };
 
   # Optional Tailscale auth key — when spec.tailscaleAuthKey is set, inject it

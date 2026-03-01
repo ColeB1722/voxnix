@@ -181,6 +181,22 @@ async def create_container(
         # To re-verify: run `extra-container create <file> --start` manually
         # and inspect stdout for the sentinel string.
         install_succeeded = "Installing containers:" in (result.stdout or "")
+
+        # ── Observability signal for heuristic drift (#81) ─────────────────
+        # When stdout is non-empty but the sentinel string is absent, the
+        # heuristic might be wrong — extra-container's output format may have
+        # changed. Emit a distinct warning so this shows up in Logfire traces
+        # before it causes silent data loss (false cleanup of valid datasets).
+        if not install_succeeded and result.stdout:
+            logfire.warning(
+                "Install heuristic mismatch for '{container_name}': "
+                "stdout is non-empty but sentinel 'Installing containers:' not found. "
+                "extra-container output format may have changed — verify manually.",
+                container_name=spec.name,
+                stdout_preview=result.stdout[:500],
+                stderr_preview=(result.stderr or "")[:500],
+            )
+
         if not install_succeeded:
             logfire.warning(
                 "Container build/install failed for '{container_name}', cleaning up ZFS dataset",

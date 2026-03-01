@@ -3,12 +3,16 @@
 Responsibilities:
   - Extract the Telegram chat_id as the owner identity (trust model anchor)
   - Dispatch text messages to the PydanticAI agent
+  - Maintain per-chat conversation history via ConversationStore
   - Split long agent responses into Telegram-sized chunks
   - Handle errors gracefully — users never see raw tracebacks
 
 Architecture decisions reflected here:
   - chat_id IS the user identity — no separate auth system (see docs/architecture.md § Trust Model)
   - agent.run() is called with owner=str(chat_id), which flows into VoxnixDeps
+  - Conversation history is stored in-memory per chat_id with TTL expiry and turn limits.
+    The store lives for the process lifetime — lost on restart, which is acceptable for
+    infrastructure commands. See #48 and #62.
   - The handler is the boundary between Telegram and the agent — it owns error handling
   - Typing action is sent before the agent runs so the user sees immediate feedback
 
@@ -24,6 +28,7 @@ from typing import TYPE_CHECKING
 from telegram.constants import ChatAction
 
 from agent.agent import run as agent_run  # re-exported for easy mocking in tests
+from agent.chat.history import ConversationStore
 
 if TYPE_CHECKING:
     from telegram import Update
@@ -33,6 +38,12 @@ logger = logging.getLogger(__name__)
 
 # Telegram rejects messages longer than 4096 characters.
 TELEGRAM_MAX_MESSAGE_LEN: int = 4096
+
+# Default conversation history settings.
+# 20 turns ≈ 40 messages — keeps LLM context window manageable.
+# 30 minutes TTL — conversations go stale after inactivity.
+DEFAULT_MAX_TURNS: int = 20
+DEFAULT_TTL_SECONDS: float = 1800.0
 
 
 # ── Owner extraction ──────────────────────────────────────────────────────────
@@ -54,6 +65,31 @@ def owner_from_update(update: Update) -> str:
     if update.effective_chat is None:
         raise ValueError("owner_from_update called on an update with no effective_chat")
     return str(update.effective_chat.id)
+
+
+# ── Conversation history ──────────────────────────────────────────────────────
+
+
+def _get_conversation_store(application: Application) -> ConversationStore:
+    """Return the shared ConversationStore, creating it if needed.
+
+    The store is kept in ``application.bot_data["conversation_store"]`` so it
+    lives for the process lifetime alongside the per-chat locks.
+
+    Args:
+        application: The running PTB Application instance.
+
+    Returns:
+        The singleton ConversationStore for this application.
+    """
+    store = application.bot_data.get("conversation_store")
+    if store is None:
+        store = ConversationStore(
+            max_turns=DEFAULT_MAX_TURNS,
+            ttl_seconds=DEFAULT_TTL_SECONDS,
+        )
+        application.bot_data["conversation_store"] = store
+    return store
 
 
 # ── Per-chat locking ──────────────────────────────────────────────────────────
@@ -175,10 +211,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         #    message is sitting in the queue waiting for a previous run.
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-        # 4. Run the agent — catch all exceptions to keep the bot alive and
+        # 4. Retrieve conversation history for this chat.
+        store = _get_conversation_store(context.application)
+        history = store.get(owner)
+
+        # 5. Run the agent — catch all exceptions to keep the bot alive and
         #    to ensure the lock is always released (async with guarantees this).
         try:
-            response = await agent_run(text.strip(), owner=owner)
+            response, new_messages = await agent_run(
+                text.strip(), owner=owner, message_history=history
+            )
         except Exception:
             logger.exception("Agent run failed for owner=%s", owner)
             await update.effective_message.reply_text(  # asserted non-None above
@@ -186,7 +228,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return
 
-        # 5. Send the response, splitting at the Telegram message limit if needed.
+        # 6. Persist the new messages from this turn into the conversation store.
+        store.append(owner, new_messages)
+
+        # 7. Send the response, splitting at the Telegram message limit if needed.
         chunks = format_response(response)
         for chunk in chunks:
             await update.effective_message.reply_text(chunk)
