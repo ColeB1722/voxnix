@@ -15,8 +15,9 @@ You are working on **voxnix** — an agentic NixOS container orchestrator. A Tel
 
 **Appliance:** `192.168.8.146` (Hyper-V Gen 2 VM, 16GB RAM)
 **Agent service:** active, Telegram bot responding
-**Current branch:** `main` — PR #77 merged, branch deleted
+**Current branch:** `feat/agent-improvements` — PR #84 open, pending human review
 **Last known good container:** `dev` running, Tailscale enrolled at `100.83.13.65` (this IP changes on re-enrollment)
+**PR #84 NOT YET DEPLOYED** — merge + deploy needed to validate new features on the appliance
 
 ---
 
@@ -37,7 +38,43 @@ All 6 MVP build steps from `docs/architecture.md` are implemented and verified. 
 
 ---
 
-## What was built (cumulative, all merged to main via PR #56)
+## What was built (cumulative)
+
+### This session — PR #84 (feat/agent-improvements, pending review)
+
+Implements #48, #62, #47, #54, #81. Agent goes from stateless command executor → conversational infrastructure assistant with self-diagnosis.
+
+**Conversation history (#48, #62):**
+- `agent/chat/history.py` — `ConversationStore`: per-chat_id message history with 30-minute TTL
+- PydanticAI `message_history` threaded through `agent.run()` → returns `(output, new_messages)` tuple
+- `handle_message` retrieves/stores history per chat_id via `application.bot_data`
+- History NOT stored on agent exceptions (no broken partial state)
+- Memory safety cap: 200 messages per chat (store), 40 messages sent to LLM (history_processor)
+- Context window trimming delegated to PydanticAI's `history_processors` pipeline (`keep_recent_turns` in agent.py) — clean separation from storage layer
+
+**Diagnostic tools (#47) — 6 new agent tools:**
+- `tool_check_host_health` — checklist: extra-container, machinectl, container@.service, ZFS
+- `tool_get_container_logs` — journalctl with machine journal → host journal fallback
+- `tool_get_container_status` — machinectl status → systemctl status fallback
+- `tool_get_tailscale_status` — tailscale status inside a container
+- `tool_check_service` — host systemd service status (allowlisted: voxnix-agent, tailscaled, nix-daemon, systemd-machined, systemd-networkd, sshd)
+- All read-only CLI wrappers with structured `DiagnosticResult`, ownership-scoped where applicable
+
+**Container query (#54) — `tool_query_container`:**
+- `agent/tools/query.py` — deep metadata retrieval with parallel fan-out
+- Installed modules (from `VOXNIX_MODULES` env var, Nix store fallback for stopped containers)
+- Tailscale IP and hostname, ZFS workspace storage usage, uptime, owner verification
+- Graceful degradation: partial facet failures still return available info
+- `nix/mkContainer.nix` — added `VOXNIX_MODULES` environment variable for introspection
+
+**Observability signal (#81):**
+- Logfire warning in `containers.py` when creation fails with non-empty stdout but missing `"Installing containers:"` sentinel — surfaces heuristic drift before data loss
+
+**Tests:** 303 → 388 (+85 new). Zero lint errors, zero type checker diagnostics.
+
+**CodeRabbit:** Reviewed, 2 findings fixed (dead code in query.py, stale docstring in diagnostics.py).
+
+### Previous sessions (all merged to main)
 
 ### Phase 0 — Deferred fixes (#46, #52, #12) — closed
 - **#46:** System prompt instructs LLM to use plain text, no Markdown
@@ -69,7 +106,7 @@ All 6 MVP build steps from `docs/architecture.md` are implemented and verified. 
 - `hostBridge = "br-vox"` in `mkContainer.nix` with `networking.interfaces.eth0.useDHCP = true`
 - Polling loop replaces `sleep 2` in `tailscale-autoconnect`
 
-### This session — ZFS pool config (#68) and Tailscale logout on destroy (#60)
+### PR #77 session — ZFS pool config (#68) and Tailscale logout on destroy (#60)
 
 - **#68 — ZFS pool name as config:**
   - Added `zfs_pool: str = "tank"` field to `VoxnixSettings` in `agent/config.py` (env var `ZFS_POOL`)
@@ -108,7 +145,18 @@ All 6 MVP build steps from `docs/architecture.md` are implemented and verified. 
 
 ---
 
-## Architecture decisions made this session (previous session)
+## Architecture decisions made this session
+
+### Conversation history lives in-memory, not Telegram (#48, #88)
+Telegram stores messages server-side but the bot never reads that history back. Our `ConversationStore` is the sole source of conversation context the agent sees. This is intentional — it's simple, lost on restart (acceptable for infra commands), and easy to migrate when A2A (#67) provides `contextId`-based storage. Decision on post-A2A storage location tracked in #88.
+
+### Context window trimming via PydanticAI history_processors, not the store
+The store accumulates full raw history (capped at 200 messages for memory safety). A `keep_recent_turns` history_processor on the Agent trims to 40 messages before every model request. This aligns with PydanticAI's built-in pipeline rather than reimplementing trimming in the store layer. Future summarization (#31-style) would be another processor — the store doesn't change.
+
+### 12 tools is within safe range
+Agent went from 6 → 12 tools. Under 20 is well within what models handle reliably. Diagnostic tools have overlapping semantics (query vs status vs logs) — evals (#51) will validate the agent picks the right one. A2A split (#67) will naturally partition tools across agents when tool count grows further.
+
+## Architecture decisions made in previous sessions
 
 ### A2A modularization (#67)
 Decouple Telegram bot (thin A2A client) from the container agent (A2A server via `agent.to_a2a()`). The Telegram layer becomes provider-agnostic — any A2A-compliant agent can be plugged in. PydanticAI supports this natively via `fasta2a`. `contextId` in A2A maps to `chat_id`, giving conversation history (#48) partially for free.
@@ -154,23 +202,25 @@ Tagged devices (`tag:shared`) have **key expiry disabled by default** in Tailsca
 
 ## What to work on next (priority order)
 
-### 1. Conversation history + session context (#48) — High
-Agent has no memory within a conversation. Each message is stateless. Consider doing #67 (A2A) first — A2A `contextId` gives per-user conversation continuity partially for free via the storage layer.
+### 0. Deploy + validate PR #84 — Immediate
+PR #84 is undeployed. Merge, deploy to the appliance, test conversation history and new tools live via Telegram. Will surface integration issues mocks can't catch (systemd namespace visibility, VOXNIX_MODULES propagation, Tailscale query timing).
 
-### 2. A2A modularization (#67) — Architectural, 2-3 sessions
-Decouple Telegram bot from the agent via fasta2a. `agent.to_a2a()` exposes the container agent as an A2A server. Telegram becomes a thin A2A client. Prerequisite for multi-agent routing (#66, #29).
+### 1. Agent evals (#51) — High (revised up)
+Agent went from 6 → 12 tools with conversation history. The decision surface doubled. Without evals, we don't know if the agent reliably picks `tool_query_container` vs `tool_get_container_status` vs `tool_list_workloads` for ambiguous requests. Lightweight first pass: 10-15 synthetic conversations, deterministic assertions on tool selection, run against a fast model. Every future PR should include eval cases alongside features.
 
-### 3. Diagnostic tools for the agent (#47) — High
-Agent can't self-diagnose. `journalctl -M <name>`, `tailscale status`, `machinectl list` etc. as agent tools. High value — would have saved significant debugging time during deployment.
+### 2. Host Tailscale (#17) — Medium
+Add `services.tailscale.enable = true` to host NixOS config. Enables out-of-LAN `just deploy` and SSH break-glass. Small, orthogonal to everything.
 
-### 4. Container query tool (#54) — High
-Users can create/destroy/start/stop but `list_workloads` exists (`tool_list_workloads`). Issue #54 is about *deeper* metadata — "tell me about the dev container" (modules, status, Tailscale IP, storage usage). `list_workloads` covers basic listing; #54 covers per-container detail.
+### 3. GitHub Deployment Action (#53) — Medium
+Deploy on merge to main via GitHub Actions. Combined with #17, removes LAN dependency.
 
-### 5. Host Tailscale (#17) — Medium
-Add `services.tailscale.enable = true` to host NixOS config. Enables out-of-LAN `just deploy` and SSH break-glass. Orthogonal to container Tailscale (#72).
+### 4. Quick cleanup batch — Low effort
+- #57 — Consolidate `validate_container_name` into `ContainerSpec`
+- #83 — Replace stdout-parsing install detection with conf-file check
+- #22 — Parameterize hardcoded values in host config
 
-### 6. GitHub Deployment Action (#53) — Medium
-Deploy on merge to main via GitHub Actions. Removes local-machine LAN dependency.
+### 5. A2A modularization (#67) — Architectural, 2-3 sessions
+Decouple Telegram bot from the agent via fasta2a. Do this WITH evals in place so you have a safety net. The conversation history decision (#88) becomes relevant here.
 
 ---
 
@@ -178,8 +228,16 @@ Deploy on merge to main via GitHub Actions. Removes local-machine LAN dependency
 
 | # | Title | Priority |
 |---|-------|----------|
+| #88 | Decide where conversation history lives post-A2A | Architectural (deferred) |
+| #86 | Fish shell module with local-optimized aliases + ttyd | Low/idea |
+| #85 | Enforce PR approval via branch protection rules | Medium (ops) |
+| #83 | Replace stdout-parsing install detection with conf-file check | Low |
+| #81 | Observability signal for install heuristic mismatch | **Done — PR #84** |
+| #80 | Browser-based terminal (ttyd) | Low/idea |
+| #79 | Typing indicator | Low/idea |
+| #78 | Fun idea | Low/idea |
 | #75 | Notifications / global agent formation | Low/idea |
-| #74 | Brittle ordered AsyncMock sequences in test_zfs.py | Low (partially addressed: _cmd_dispatch added) |
+| #74 | Brittle ordered AsyncMock sequences in test_zfs.py | Low (partially addressed) |
 | #73 | Document install-detection heuristic fragility | Low |
 | #72 | Tiered Tailscale connectivity model | Medium |
 | #71 | Module self-description | Medium |
@@ -191,18 +249,18 @@ Deploy on merge to main via GitHub Actions. Removes local-machine LAN dependency
 | #65 | Git worktree support | Low |
 | #64 | BYOM (bring your own modules) | Low |
 | #63 | iOS/Android native app | Low/idea |
-| #62 | TTL-based multi-turn conversation | Medium |
+| #62 | TTL-based multi-turn conversation | **Done — PR #84** |
 | #61 | Zero trust auth layer for Telegram | Medium |
 | #60 | Stale Tailscale node cleanup + --reset flag | **Done — merged PR #77** |
 | #59 | Use spec.model_copy() to avoid mutating ContainerSpec | Low |
 | #58 | Add Pydantic validator for zfs_user_quota format | Low |
 | #57 | Consolidate validate_container_name into ContainerSpec | Low |
 | #55 | iOS/Android widget display | Low/idea |
-| #54 | Agent container "query" (deep metadata) | High |
+| #54 | Agent container "query" (deep metadata) | **Done — PR #84** |
 | #53 | GitHub Deployment Action | Medium |
-| #51 | Automated LLM quality evals | Low |
-| #48 | Conversation history + session context | High |
-| #47 | Expose diagnostic tools to agent | High |
+| #51 | Automated LLM quality evals | **High (revised up)** |
+| #48 | Conversation history + session context | **Done — PR #84** |
+| #47 | Expose diagnostic tools to agent | **Done — PR #84** |
 | #34 | Configurable observability backend | Low |
 | #32 | Custom installer ISO | Low/idea |
 | #31 | Agent-driven evals | Low/idea |

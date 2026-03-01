@@ -16,6 +16,9 @@ Architecture decisions reflected here:
 - LLM provider and model are configured via environment variables (agenix secrets).
   The agent binary is provider-agnostic.
 - Logfire is used for all observability — full traces for every agent run.
+- Conversation history is managed by the chat layer (ConversationStore) and
+  threaded into agent.run() via message_history. The agent itself is stateless —
+  the chat layer owns persistence and TTL. See #48, #62.
 
 See docs/architecture.md § Agent Tool Architecture and § Trust Model.
 """
@@ -23,11 +26,17 @@ See docs/architecture.md § Agent Tool Architecture and § Trust Model.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import logfire
 from pydantic_ai import Agent, RunContext
 
 from agent.config import VoxnixSettings, get_settings
+
+if TYPE_CHECKING:
+    from pydantic_ai.messages import ModelMessage
+
+from agent.chat.history import DEFAULT_MAX_TURN_MESSAGES
 from agent.nix_gen.discovery import discover_modules
 from agent.nix_gen.models import ContainerSpec, validate_container_name
 from agent.tools.containers import (
@@ -37,6 +46,15 @@ from agent.tools.containers import (
     start_container,
     stop_container,
 )
+from agent.tools.diagnostics import (
+    DiagnosticResult,
+    check_host_health,
+    get_container_logs,
+    get_container_status,
+    get_service_status,
+    get_tailscale_status,
+)
+from agent.tools.query import ContainerInfo, query_container
 from agent.tools.workloads import Workload, WorkloadError, get_container_owner, list_workloads
 from agent.tools.zfs import get_user_storage_info
 
@@ -85,6 +103,27 @@ async def _check_ownership(name: str, owner: str) -> str | None:
     return f"❌ Container `{name}` belongs to another user."
 
 
+# ── History processor ──────────────────────────────────────────────────────────
+
+
+async def keep_recent_turns(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Trim conversation history to the most recent turns before sending to the LLM.
+
+    This is a PydanticAI history_processor — it runs inside agent.run() on every
+    model request, trimming what the model sees without affecting what the
+    ConversationStore persists. The store accumulates the full raw history;
+    this processor keeps the context window manageable.
+
+    The cap is DEFAULT_MAX_TURN_MESSAGES (max_turns * 2). When the history
+    exceeds this, the oldest messages are dropped.
+
+    See PydanticAI docs § Messages and Chat History § history_processors.
+    """
+    if len(messages) > DEFAULT_MAX_TURN_MESSAGES:
+        return messages[-DEFAULT_MAX_TURN_MESSAGES:]
+    return messages
+
+
 # ── Agent definition ───────────────────────────────────────────────────────────
 
 # model=None — the model is resolved at run time by passing get_settings().llm_model_string
@@ -94,10 +133,15 @@ async def _check_ownership(name: str, owner: str) -> str | None:
 # (environment variable checks, provider availability) until the first .run() call.
 # Together with model=None this means importing this module in CI or tests never
 # requires LLM_PROVIDER, LLM_MODEL, or any provider API key to be set.
+#
+# history_processors — delegates context window trimming to PydanticAI's pipeline.
+# The ConversationStore handles persistence and TTL; the history_processor handles
+# "what does the LLM actually see." Clean separation of concerns.
 agent: Agent[VoxnixDeps, str] = Agent(
     model=None,
     deps_type=VoxnixDeps,
     defer_model_check=True,
+    history_processors=[keep_recent_turns],
 )
 
 
@@ -137,7 +181,6 @@ Guidelines:
   module unless the user explicitly asks for a container without remote access.
 - Container names must be 11 characters or fewer (network interface name limit). Choose short names.
 - Destroy containers immediately when explicitly requested — do not ask for confirmation first.
-  There is no conversation history, so a confirm-then-act flow cannot work.
   Trust that an explicit destroy request is intentional.
 - If a tool call fails, diagnose the error, attempt a fix, and retry once before escalating.
 - Never expose raw error output to the user — translate it into plain language.
@@ -322,25 +365,207 @@ async def tool_storage_usage(ctx: RunContext[VoxnixDeps]) -> str:
     return info.message
 
 
+@agent.tool
+async def tool_query_container(
+    ctx: RunContext[VoxnixDeps],
+    name: str,
+) -> str:
+    """Get detailed information about a specific container.
+
+    Returns rich metadata including installed modules, Tailscale IP and
+    hostname, storage usage, uptime, and state. Use this when the user
+    asks things like "tell me about the dev container" or "what modules
+    does dev have".
+
+    Args:
+        name: Name of the container to query.
+
+    Returns:
+        A plain-language summary of the container's metadata.
+    """
+    if name_error := validate_container_name(name):
+        return f"❌ {name_error}"
+
+    info: ContainerInfo = await query_container(name, owner=ctx.deps.owner)
+
+    if not info.exists:
+        return f"❌ Container `{name}` does not exist."
+
+    if info.error and "another user" in info.error:
+        return f"❌ Container `{name}` belongs to another user."
+
+    return info.format_summary()
+
+
+@agent.tool
+async def tool_check_host_health(ctx: RunContext[VoxnixDeps]) -> str:
+    """Run a health check on the host infrastructure.
+
+    Checks whether key components are available and functioning:
+    extra-container, machinectl, container service template, and ZFS.
+    Use this to diagnose why container operations might be failing.
+
+    Returns:
+        A checklist of host health indicators with pass/fail status.
+    """
+    result: DiagnosticResult = await check_host_health()
+    return result.output
+
+
+@agent.tool
+async def tool_get_container_logs(
+    ctx: RunContext[VoxnixDeps],
+    name: str,
+    lines: int = 50,
+) -> str:
+    """Retrieve recent log entries from a container.
+
+    Reads the container's systemd journal. Useful for diagnosing why a
+    container failed to start, why a service inside it is misbehaving,
+    or checking recent activity.
+
+    Args:
+        name: Name of the container to read logs from.
+        lines: Number of recent log lines to retrieve (default 50, max 200).
+
+    Returns:
+        Recent log lines from the container, or an error message.
+    """
+    if name_error := validate_container_name(name):
+        return f"❌ {name_error}"
+
+    if denied := await _check_ownership(name, ctx.deps.owner):
+        return denied
+
+    result: DiagnosticResult = await get_container_logs(name, lines=lines)
+
+    if result.success:
+        return result.output
+
+    return f"❌ {result.error}"
+
+
+@agent.tool
+async def tool_get_container_status(
+    ctx: RunContext[VoxnixDeps],
+    name: str,
+) -> str:
+    """Get detailed systemd and machine status for a container.
+
+    Shows whether the container is running, its resource usage, and
+    systemd unit state. Use this for deeper diagnostics than list_workloads.
+
+    Args:
+        name: Name of the container to check.
+
+    Returns:
+        Detailed status information for the container.
+    """
+    if name_error := validate_container_name(name):
+        return f"❌ {name_error}"
+
+    if denied := await _check_ownership(name, ctx.deps.owner):
+        return denied
+
+    result: DiagnosticResult = await get_container_status(name)
+
+    if result.success:
+        return result.output
+
+    return f"❌ {result.error}"
+
+
+@agent.tool
+async def tool_get_tailscale_status(
+    ctx: RunContext[VoxnixDeps],
+    name: str,
+) -> str:
+    """Check Tailscale connectivity status for a container.
+
+    Queries Tailscale inside the container to report its IP, hostname,
+    and whether it is connected to the tailnet. Use this to diagnose
+    Tailscale enrollment or connectivity issues.
+
+    Args:
+        name: Name of the container to check Tailscale status for.
+
+    Returns:
+        Tailscale status output from inside the container.
+    """
+    if name_error := validate_container_name(name):
+        return f"❌ {name_error}"
+
+    if denied := await _check_ownership(name, ctx.deps.owner):
+        return denied
+
+    result: DiagnosticResult = await get_tailscale_status(name)
+
+    if result.success:
+        return result.output
+
+    return f"❌ {result.error}"
+
+
+@agent.tool
+async def tool_check_service(
+    ctx: RunContext[VoxnixDeps],
+    service_name: str,
+) -> str:
+    """Check the status of a host-level systemd service.
+
+    Only allows querying a fixed set of infrastructure services:
+    voxnix-agent, tailscaled, nix-daemon, systemd-machined,
+    systemd-networkd, sshd.
+
+    Args:
+        service_name: Name of the service to check (without .service suffix).
+
+    Returns:
+        Service status information or an error if the service is not allowed.
+    """
+    result: DiagnosticResult = await get_service_status(service_name)
+
+    if result.success:
+        return result.output
+
+    return f"❌ {result.error}"
+
+
 # ── Run helper ─────────────────────────────────────────────────────────────
 
 
-async def run(message: str, owner: str) -> str:
-    """Run the agent for a single user message.
+async def run(
+    message: str,
+    owner: str,
+    message_history: list[ModelMessage] | None = None,
+) -> tuple[str, list[ModelMessage]]:
+    """Run the agent for a single user message, optionally with conversation history.
 
     Resolves the model from settings at call time — env vars are only required
     when actually running the agent, not at import time.
 
+    When ``message_history`` is provided, PydanticAI prepends it to the
+    conversation so the agent has context from prior turns. The chat layer
+    (ConversationStore) is responsible for managing, persisting, and expiring
+    histories — this function just threads them through.
+
     Args:
         message: The user's natural language message.
         owner: The Telegram chat_id of the requesting user.
+        message_history: Optional list of messages from previous turns in this
+                         conversation. Pass the output of ``ConversationStore.get()``
+                         here. If None or empty, the agent runs statelessly.
 
     Returns:
-        The agent's response as a string.
+        A tuple of ``(output, new_messages)`` where:
+        - ``output`` is the agent's response as a string.
+        - ``new_messages`` is the list of new ModelMessage objects from this turn,
+          suitable for passing to ``ConversationStore.append()``.
     """
     result = await agent.run(
         message,
         model=get_settings().llm_model_string,
         deps=VoxnixDeps(owner=owner),
+        message_history=message_history or [],
     )
-    return result.output
+    return result.output, result.new_messages()

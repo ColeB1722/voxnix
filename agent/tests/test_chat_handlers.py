@@ -5,7 +5,9 @@ TDD — these tests define the contract for the chat layer glue code:
   - format_response: splits long agent responses for the Telegram 4096-char limit
   - handle_message: end-to-end handler — receive message → agent.run → reply
   - _get_chat_lock: per-chat asyncio.Lock retrieval from application.bot_data
+  - _get_conversation_store: ConversationStore retrieval from application.bot_data
   - per-chat serialization: concurrent messages for the same chat are queued
+  - conversation history: messages are stored per-chat and threaded into agent.run
 
 All Telegram API objects are mocked — no bot token or network required.
 
@@ -222,11 +224,12 @@ class TestHandleMessage:
         context = _make_context()
 
         with patch(
-            "agent.chat.handlers.agent_run", new=AsyncMock(return_value="No containers.")
+            "agent.chat.handlers.agent_run",
+            new=AsyncMock(return_value=("No containers.", [])),
         ) as mock_run:
             await handle_message(update, context)
 
-        mock_run.assert_called_once_with("list my containers", owner="555")
+        mock_run.assert_called_once_with("list my containers", owner="555", message_history=[])
 
     async def test_sends_agent_response_to_user(self):
         """The agent's reply must reach update.effective_message.reply_text."""
@@ -235,7 +238,7 @@ class TestHandleMessage:
         update = _make_update(text="ping", chat_id=1)
         context = _make_context()
 
-        with patch("agent.chat.handlers.agent_run", new=AsyncMock(return_value="pong")):
+        with patch("agent.chat.handlers.agent_run", new=AsyncMock(return_value=("pong", []))):
             await handle_message(update, context)
 
         update.effective_message.reply_text.assert_called_once_with("pong")
@@ -250,9 +253,9 @@ class TestHandleMessage:
 
         call_order: list[str] = []
 
-        async def fake_run(*_a, **_kw) -> str:
+        async def fake_run(*_a, **_kw) -> tuple[str, list]:
             call_order.append("agent")
-            return "done"
+            return "done", []
 
         async def fake_action(*_a, **_kw) -> None:
             call_order.append("typing")
@@ -275,7 +278,10 @@ class TestHandleMessage:
         long_response = "log line\n" * (TELEGRAM_MAX_MESSAGE_LEN // 5)
         assert len(long_response) > TELEGRAM_MAX_MESSAGE_LEN  # sanity check
 
-        with patch("agent.chat.handlers.agent_run", new=AsyncMock(return_value=long_response)):
+        with patch(
+            "agent.chat.handlers.agent_run",
+            new=AsyncMock(return_value=(long_response, [])),
+        ):
             await handle_message(update, context)
 
         # reply_text must have been called more than once
@@ -310,7 +316,9 @@ class TestHandleMessage:
         update.effective_message.text = None  # simulate a photo/sticker
         context = _make_context()
 
-        with patch("agent.chat.handlers.agent_run", new=AsyncMock()) as mock_run:
+        with patch(
+            "agent.chat.handlers.agent_run", new=AsyncMock(return_value=("ok", []))
+        ) as mock_run:
             await handle_message(update, context)
 
         mock_run.assert_not_called()
@@ -325,9 +333,9 @@ class TestHandleMessage:
 
         captured: list[str] = []
 
-        async def capture_owner(_msg: str, *, owner: str) -> str:
+        async def capture_owner(_msg: str, *, owner: str, message_history=None) -> tuple[str, list]:
             captured.append(owner)
-            return "ok"
+            return "ok", []
 
         with patch("agent.chat.handlers.agent_run", new=capture_owner):
             await handle_message(update, context)
@@ -341,7 +349,9 @@ class TestHandleMessage:
         update = _make_update(text="   \n\t  ", chat_id=6)
         context = _make_context()
 
-        with patch("agent.chat.handlers.agent_run", new=AsyncMock()) as mock_run:
+        with patch(
+            "agent.chat.handlers.agent_run", new=AsyncMock(return_value=("ok", []))
+        ) as mock_run:
             await handle_message(update, context)
 
         mock_run.assert_not_called()
@@ -378,6 +388,148 @@ class TestHandleStart:
 
 
 # ── build_application ─────────────────────────────────────────────────────────
+
+
+class TestConversationHistory:
+    """Conversation history is stored per-chat and threaded into agent.run."""
+
+    async def test_history_passed_to_agent_run(self):
+        """agent_run receives the conversation history from the store."""
+        from agent.chat.handlers import handle_message
+
+        update = _make_update(text="hello", chat_id=42)
+        context = _make_context()
+
+        captured_history: list = []
+
+        async def capture_run(_msg: str, *, owner: str, message_history=None) -> tuple[str, list]:
+            captured_history.append(message_history)
+            return "hi", []
+
+        with patch("agent.chat.handlers.agent_run", new=capture_run):
+            await handle_message(update, context)
+
+        # First message — no prior history, so empty list
+        assert captured_history == [[]]
+
+    async def test_new_messages_stored_after_run(self):
+        """After a successful agent run, new_messages are stored in the conversation store."""
+        from agent.chat.handlers import _get_conversation_store, handle_message
+
+        shared_bot_data: dict = {}
+        update = _make_update(text="create a container", chat_id=99)
+        context = _make_context(bot_data=shared_bot_data)
+
+        fake_new_messages = [MagicMock(_label="req"), MagicMock(_label="resp")]
+
+        with patch(
+            "agent.chat.handlers.agent_run",
+            new=AsyncMock(return_value=("done", fake_new_messages)),
+        ):
+            await handle_message(update, context)
+
+        store = _get_conversation_store(context.application)
+        stored = store.get("99")
+        assert stored == fake_new_messages
+
+    async def test_history_accumulates_across_turns(self):
+        """Multiple messages from the same chat accumulate history that is
+        passed to subsequent agent runs."""
+        from agent.chat.handlers import handle_message
+
+        shared_bot_data: dict = {}
+        turn_counter = 0
+        captured_histories: list = []
+
+        async def tracking_run(_msg: str, *, owner: str, message_history=None) -> tuple[str, list]:
+            nonlocal turn_counter
+            captured_histories.append(list(message_history) if message_history else [])
+            turn_counter += 1
+            # Return unique mock messages for each turn
+            return f"response {turn_counter}", [MagicMock(_turn=turn_counter)]
+
+        update = _make_update(text="first", chat_id=77)
+        ctx1 = _make_context(bot_data=shared_bot_data)
+        ctx2 = _make_context(bot_data=shared_bot_data)
+
+        with patch("agent.chat.handlers.agent_run", new=tracking_run):
+            await handle_message(update, ctx1)
+
+            update2 = _make_update(text="second", chat_id=77)
+            await handle_message(update2, ctx2)
+
+        # First call — empty history
+        assert captured_histories[0] == []
+        # Second call — history from first turn
+        assert len(captured_histories[1]) == 1
+
+    async def test_different_chats_have_independent_history(self):
+        """Chat A's history does not leak into Chat B's agent runs."""
+        from agent.chat.handlers import handle_message
+
+        shared_bot_data: dict = {}
+        captured: dict[str, list] = {}
+
+        async def tracking_run(_msg: str, *, owner: str, message_history=None) -> tuple[str, list]:
+            captured[owner] = list(message_history) if message_history else []
+            return "ok", [MagicMock(_owner=owner)]
+
+        # Chat A sends a message first
+        update_a = _make_update(text="hello from A", chat_id=100)
+        ctx_a = _make_context(bot_data=shared_bot_data)
+
+        with patch("agent.chat.handlers.agent_run", new=tracking_run):
+            await handle_message(update_a, ctx_a)
+
+            # Chat B sends a message — should have empty history
+            update_b = _make_update(text="hello from B", chat_id=200)
+            ctx_b = _make_context(bot_data=shared_bot_data)
+            await handle_message(update_b, ctx_b)
+
+        # Chat A had empty history (first message)
+        assert captured["100"] == []
+        # Chat B also had empty history (first message for this chat)
+        assert captured["200"] == []
+
+    async def test_history_not_stored_on_agent_exception(self):
+        """If the agent raises, no new messages are stored — the conversation
+        store should not contain partial/broken history."""
+        from agent.chat.handlers import _get_conversation_store, handle_message
+
+        shared_bot_data: dict = {}
+        update = _make_update(text="crash me", chat_id=88)
+        context = _make_context(bot_data=shared_bot_data)
+
+        with patch(
+            "agent.chat.handlers.agent_run",
+            new=AsyncMock(side_effect=RuntimeError("boom")),
+        ):
+            await handle_message(update, context)
+
+        store = _get_conversation_store(context.application)
+        assert store.get("88") == []
+
+    async def test_conversation_store_created_lazily(self):
+        """The ConversationStore is created on first access, not at app startup."""
+        from agent.chat.handlers import _get_conversation_store
+
+        application = MagicMock()
+        application.bot_data = {}
+
+        store = _get_conversation_store(application)
+        assert store is not None
+        assert "conversation_store" in application.bot_data
+
+    async def test_conversation_store_is_singleton_per_application(self):
+        """Multiple calls to _get_conversation_store return the same instance."""
+        from agent.chat.handlers import _get_conversation_store
+
+        application = MagicMock()
+        application.bot_data = {}
+
+        store1 = _get_conversation_store(application)
+        store2 = _get_conversation_store(application)
+        assert store1 is store2
 
 
 class TestBuildApplication:
@@ -478,11 +630,11 @@ class TestPerChatLocking:
         call_order: list[str] = []
         shared_bot_data: dict = {}
 
-        async def slow_agent(text: str, *, owner: str) -> str:
+        async def slow_agent(text: str, *, owner: str, message_history=None) -> tuple[str, list]:
             call_order.append("start")
             await asyncio.sleep(0.02)  # simulate a slow LLM / Nix build
             call_order.append("end")
-            return "done"
+            return "done", []
 
         update = _make_update(text="do something", chat_id=100)
         ctx_a = _make_context(bot_data=shared_bot_data)
@@ -505,11 +657,11 @@ class TestPerChatLocking:
         call_order: list[str] = []
         shared_bot_data: dict = {}
 
-        async def slow_agent(text: str, *, owner: str) -> str:
+        async def slow_agent(text: str, *, owner: str, message_history=None) -> tuple[str, list]:
             call_order.append(f"start:{owner}")
             await asyncio.sleep(0.02)
             call_order.append(f"end:{owner}")
-            return "done"
+            return "done", []
 
         update_a = _make_update(text="msg", chat_id=100)
         update_b = _make_update(text="msg", chat_id=200)
@@ -537,12 +689,14 @@ class TestPerChatLocking:
         responses = ["first response", "second response"]
         call_count = 0
 
-        async def counting_agent(text: str, *, owner: str) -> str:
+        async def counting_agent(
+            text: str, *, owner: str, message_history=None
+        ) -> tuple[str, list]:
             nonlocal call_count
             await asyncio.sleep(0.01)
             response = responses[call_count]
             call_count += 1
-            return response
+            return response, []
 
         update = _make_update(text="msg", chat_id=55)
         ctx_a = _make_context(bot_data=shared_bot_data)
@@ -566,12 +720,14 @@ class TestPerChatLocking:
         shared_bot_data: dict = {}
         call_count = 0
 
-        async def failing_then_ok(text: str, *, owner: str) -> str:
+        async def failing_then_ok(
+            text: str, *, owner: str, message_history=None
+        ) -> tuple[str, list]:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise RuntimeError("LLM unavailable")
-            return "recovered"
+            return "recovered", []
 
         update = _make_update(text="msg", chat_id=77)
         ctx_a = _make_context(bot_data=shared_bot_data)
