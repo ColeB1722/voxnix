@@ -13,11 +13,11 @@ You are working on **voxnix** — an agentic NixOS container orchestrator. A Tel
 
 ## System state
 
-**Appliance:** `192.168.8.146` (Hyper-V Gen 2 VM, 16GB RAM)
+**Appliance:** `192.168.8.157` (Hyper-V Gen 2 VM, 16GB RAM) — ⚠️ IP rotates via DHCP, see #89
 **Agent service:** active, Telegram bot responding
-**Current branch:** `feat/agent-improvements` — PR #84 open, pending human review
+**Current branch:** `main` — PR #84 merged and deployed
 **Last known good container:** `dev` running, Tailscale enrolled at `100.83.13.65` (this IP changes on re-enrollment)
-**PR #84 NOT YET DEPLOYED** — merge + deploy needed to validate new features on the appliance
+**PR #84 deployed** ✅ — agent service restarted, new code live on appliance. Existing containers lack `VOXNIX_MODULES` env var (pre-#84 builds) — will appear on next container create/recreate.
 
 ---
 
@@ -147,13 +147,53 @@ Implements #48, #62, #47, #54, #81. Agent goes from stateless command executor �
 
 ## Architecture decisions made this session
 
-### Conversation history lives in-memory, not Telegram (#48, #88)
+### Eval framework: deepeval, not hand-rolled pytest (#51)
+Evaluated two approaches for agent evals: (a) hand-rolled pytest harness using PydanticAI's TestModel/FunctionModel with manual assertions on tool selection, vs (b) deepeval framework with built-in metrics.
+
+**Decision: deepeval.** Rationale:
+- `ToolCorrectnessMetric` evaluates tool selection + argument correctness out of the box
+- `TaskCompletionMetric` evaluates whether the user's goal was actually accomplished — this matters more than which tool was called
+- Conversational metrics (Knowledge Retention, Conversation Completeness, Role Adherence) are directly relevant to conversation history (#48)
+- 0-1 scoring with thresholds and LLM-generated explanations beats binary pass/fail for debugging prompt/docstring regressions
+- Iteration tracking via Confident AI platform enables comparing results across PRs
+- `deepeval test run` integrates with CI pipelines (#53)
+
+**What NOT to do:**
+- Don't use PydanticAI's `TestModel(call_tools=[...])` for evals — telling the model which tool to call and then asserting it called that tool is circular. TestModel-based tests are integration tests for tool wiring, not evals. Keep them in `agent/tests/`.
+- Don't hand-roll tool selection assertions in pytest — deepeval's metrics are purpose-built for this.
+
+**Lean start plan:**
+1. Add `deepeval` as a dev dependency
+2. Define 15 scenarios as `LLMTestCase` / `Golden` objects covering the tool overlap surface (query vs status vs list, diagnostics routing, lifecycle commands)
+3. Start with `ToolCorrectnessMetric` and `TaskCompletionMetric` only
+4. Gate LLM evals behind API key presence in CI (evals use an LLM-as-judge, separate from the agent's model)
+5. Expand to conversational metrics and G-Eval for response quality once the baseline is established
+
+**Key scenarios to cover** (identified during this session):
+- "Tell me about dev" → `tool_query_container` (not `tool_get_container_status`, not `tool_list_workloads`)
+- "What modules does dev have?" → `tool_query_container`
+- "Is dev running?" → `tool_get_container_status`
+- "What containers do I have?" → `tool_list_workloads`
+- "Container ops keep failing, what's wrong?" → `tool_check_host_health`
+- "Show me the logs for dev" → `tool_get_container_logs`
+- "Is Tailscale working on dev?" → `tool_get_tailscale_status`
+- "Is the nix-daemon service running?" → `tool_check_service`
+- Multi-turn: create container → "what modules does it have?" (context carryover)
+- Multi-turn: check status → "show me the logs" (diagnostic escalation)
+- Edge: "How is dev doing?" (broad → should prefer query over status)
+- Edge: "What's the Tailscale IP for dev?" (query or tailscale_status, not list)
+- All 6 lifecycle commands (create, destroy, start, stop + unambiguous variants)
+
+### Appliance IP rotates via DHCP (#89)
+Host uses `networking.useDHCP = true` — IP changes on lease expiry or reboot (was `.146`, now `.157`). Three fix paths: static IP in NixOS config, DHCP reservation on router, or Host Tailscale (#17) making LAN IP irrelevant. Tracked in #89.
+
+### Previous session — Conversation history lives in-memory, not Telegram (#48, #88)
 Telegram stores messages server-side but the bot never reads that history back. Our `ConversationStore` is the sole source of conversation context the agent sees. This is intentional — it's simple, lost on restart (acceptable for infra commands), and easy to migrate when A2A (#67) provides `contextId`-based storage. Decision on post-A2A storage location tracked in #88.
 
-### Context window trimming via PydanticAI history_processors, not the store
+### Previous session — Context window trimming via PydanticAI history_processors, not the store
 The store accumulates full raw history (capped at 200 messages for memory safety). A `keep_recent_turns` history_processor on the Agent trims to 40 messages before every model request. This aligns with PydanticAI's built-in pipeline rather than reimplementing trimming in the store layer. Future summarization (#31-style) would be another processor — the store doesn't change.
 
-### 12 tools is within safe range
+### Previous session — 12 tools is within safe range
 Agent went from 6 → 12 tools. Under 20 is well within what models handle reliably. Diagnostic tools have overlapping semantics (query vs status vs logs) — evals (#51) will validate the agent picks the right one. A2A split (#67) will naturally partition tools across agents when tool count grows further.
 
 ## Architecture decisions made in previous sessions
@@ -202,14 +242,15 @@ Tagged devices (`tag:shared`) have **key expiry disabled by default** in Tailsca
 
 ## What to work on next (priority order)
 
-### 0. Deploy + validate PR #84 — Immediate
-PR #84 is undeployed. Merge, deploy to the appliance, test conversation history and new tools live via Telegram. Will surface integration issues mocks can't catch (systemd namespace visibility, VOXNIX_MODULES propagation, Tailscale query timing).
+### 0. PR #84 deployed ✅ — Live validation pending
+PR #84 is merged and deployed. Agent service restarted with new code. Needs live validation via Telegram: test conversation history persistence across turns, new diagnostic tools, container query with `VOXNIX_MODULES` (requires creating a new container — existing ones pre-date the env var).
 
-### 1. Agent evals (#51) — High (revised up)
-Agent went from 6 → 12 tools with conversation history. The decision surface doubled. Without evals, we don't know if the agent reliably picks `tool_query_container` vs `tool_get_container_status` vs `tool_list_workloads` for ambiguous requests. Lightweight first pass: 10-15 synthetic conversations, deterministic assertions on tool selection, run against a fast model. Every future PR should include eval cases alongside features.
+### 1. Agent evals (#51) — High (next session)
+**Framework: deepeval** (decision made this session — see Architecture Decisions above).
+Add `deepeval` as dev dependency. Define 15 scenarios as `LLMTestCase`/`Golden` objects. Start with `ToolCorrectnessMetric` + `TaskCompletionMetric`. Gate LLM evals behind API key in CI. Every future PR should include eval cases alongside features.
 
 ### 2. Host Tailscale (#17) — Medium
-Add `services.tailscale.enable = true` to host NixOS config. Enables out-of-LAN `just deploy` and SSH break-glass. Small, orthogonal to everything.
+Add `services.tailscale.enable = true` to host NixOS config. Enables out-of-LAN `just deploy` and SSH break-glass. Small, orthogonal to everything. Also mitigates #89 (DHCP IP rotation) by providing a stable Tailscale IP.
 
 ### 3. GitHub Deployment Action (#53) — Medium
 Deploy on merge to main via GitHub Actions. Combined with #17, removes LAN dependency.
@@ -218,6 +259,7 @@ Deploy on merge to main via GitHub Actions. Combined with #17, removes LAN depen
 - #57 — Consolidate `validate_container_name` into `ContainerSpec`
 - #83 — Replace stdout-parsing install detection with conf-file check
 - #22 — Parameterize hardcoded values in host config
+- #89 — Fix appliance DHCP IP rotation (static IP or rely on #17)
 
 ### 5. A2A modularization (#67) — Architectural, 2-3 sessions
 Decouple Telegram bot from the agent via fasta2a. Do this WITH evals in place so you have a safety net. The conversation history decision (#88) becomes relevant here.
@@ -228,7 +270,9 @@ Decouple Telegram bot from the agent via fasta2a. Do this WITH evals in place so
 
 | # | Title | Priority |
 |---|-------|----------|
+| #89 | Appliance IP rotates via DHCP — static IP or Host Tailscale | Medium (ops) |
 | #88 | Decide where conversation history lives post-A2A | Architectural (deferred) |
+| #87 | Optimize for flexibility (startup wizard, auto-create tags) | Low/idea |
 | #86 | Fish shell module with local-optimized aliases + ttyd | Low/idea |
 | #85 | Enforce PR approval via branch protection rules | Medium (ops) |
 | #83 | Replace stdout-parsing install detection with conf-file check | Low |
@@ -287,30 +331,30 @@ Decouple Telegram bot from the agent via fasta2a. Do this WITH evals in place so
 
 ```bash
 # Agent logs (live, filter polling noise)
-ssh admin@192.168.8.146 "journalctl -u voxnix-agent -f | grep -v getUpdates"
+ssh admin@192.168.8.157 "journalctl -u voxnix-agent -f | grep -v getUpdates"
 
 # Container status
-ssh admin@192.168.8.146 "sudo machinectl list"
-ssh admin@192.168.8.146 "sudo extra-container list"
+ssh admin@192.168.8.157 "sudo machinectl list"
+ssh admin@192.168.8.157 "sudo extra-container list"
 
 # Tailscale status inside container
-ssh admin@192.168.8.146 "sudo nsenter -t \$(sudo machinectl show dev --property=Leader --value) -m -p -- systemctl status tailscaled"
+ssh admin@192.168.8.157 "sudo nsenter -t \$(sudo machinectl show dev --property=Leader --value) -m -p -- systemctl status tailscaled"
 
 # Tailscale autoconnect logs
-ssh admin@192.168.8.146 "sudo journalctl -M dev -u tailscale-autoconnect --no-pager -n 20"
+ssh admin@192.168.8.157 "sudo journalctl -M dev -u tailscale-autoconnect --no-pager -n 20"
 
 # Container network
-ssh admin@192.168.8.146 "LEADER=\$(sudo machinectl show dev --property=Leader --value) && sudo nsenter -t \$LEADER -n -- ip addr show eth0 && sudo nsenter -t \$LEADER -n -- ip route show"
+ssh admin@192.168.8.157 "LEADER=\$(sudo machinectl show dev --property=Leader --value) && sudo nsenter -t \$LEADER -n -- ip addr show eth0 && sudo nsenter -t \$LEADER -n -- ip route show"
 
 # ZFS dataset state
-ssh admin@192.168.8.146 "sudo zfs list -r tank/users"
+ssh admin@192.168.8.157 "sudo zfs list -r tank/users"
 
 # Full cleanup (container + ZFS)
-ssh admin@192.168.8.146 "sudo extra-container destroy dev && sudo zfs destroy -r tank/users/8586298950/containers/dev"
+ssh admin@192.168.8.157 "sudo extra-container destroy dev && sudo zfs destroy -r tank/users/8586298950/containers/dev"
 
 # Bridge and NAT health
-ssh admin@192.168.8.146 "ip addr show br-vox && systemctl is-active dnsmasq"
-ssh admin@192.168.8.146 "sudo iptables -t nat -L nixos-nat-pre -n -v | grep br-vox"
+ssh admin@192.168.8.157 "ip addr show br-vox && systemctl is-active dnsmasq"
+ssh admin@192.168.8.157 "sudo iptables -t nat -L nixos-nat-pre -n -v | grep br-vox"
 ```
 
 ---
