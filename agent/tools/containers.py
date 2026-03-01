@@ -167,8 +167,16 @@ async def create_container(
         # A more robust alternative: check whether the container conf file
         # exists at /etc/nixos-containers/<name>.conf after the command exits.
         # That's a filesystem fact rather than an output-parsing heuristic.
-        # Deferred because the current approach works and the conf-file check
-        # adds a new run_command call on the failure path.
+        # Deferred because:
+        #   1. The current approach works against extra-container 0.13.
+        #   2. The agent runs under ProtectSystem=strict — Path.exists() on
+        #      /etc/nixos-containers/ needs verification on the live appliance
+        #      to confirm the systemd sandbox doesn't block the read. A silent
+        #      False would cause us to always clean up ZFS, even after a
+        #      successful install.
+        #   3. #81 tracks an observability signal that will surface heuristic
+        #      drift before it causes data loss.
+        # Tracked for future implementation: #83.
         #
         # To re-verify: run `extra-container create <file> --start` manually
         # and inspect stdout for the sentinel string.
