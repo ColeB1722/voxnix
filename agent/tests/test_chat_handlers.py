@@ -19,6 +19,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from pydantic import SecretStr
+
 # ── Helpers to build minimal mock Telegram objects ────────────────────────────
 
 
@@ -916,7 +918,7 @@ class TestIsChatAuthorized:
             voxnix_flake_path="/tmp/test",
             llm_provider="ollama",
             llm_model="test",
-            telegram_bot_token="fake:token",
+            telegram_bot_token=SecretStr("fake:token"),
             telegram_allowed_chat_ids=frozenset({111, 222, 333}),
         )
         assert settings.is_chat_authorized(222) is True
@@ -928,7 +930,7 @@ class TestIsChatAuthorized:
             voxnix_flake_path="/tmp/test",
             llm_provider="ollama",
             llm_model="test",
-            telegram_bot_token="fake:token",
+            telegram_bot_token=SecretStr("fake:token"),
             telegram_allowed_chat_ids=frozenset({111, 222}),
         )
         assert settings.is_chat_authorized(999) is False
@@ -941,7 +943,7 @@ class TestIsChatAuthorized:
             voxnix_flake_path="/tmp/test",
             llm_provider="ollama",
             llm_model="test",
-            telegram_bot_token="fake:token",
+            telegram_bot_token=SecretStr("fake:token"),
             telegram_allowed_chat_ids=frozenset(),
         )
         assert settings.is_chat_authorized(111) is False
@@ -954,7 +956,7 @@ class TestIsChatAuthorized:
             voxnix_flake_path="/tmp/test",
             llm_provider="ollama",
             llm_model="test",
-            telegram_bot_token="fake:token",
+            telegram_bot_token=SecretStr("fake:token"),
             telegram_allowed_chat_ids=frozenset({-100123456}),
         )
         assert settings.is_chat_authorized(-100123456) is True
@@ -971,8 +973,8 @@ class TestParseAllowedChatIds:
             voxnix_flake_path="/tmp/test",
             llm_provider="ollama",
             llm_model="test",
-            telegram_bot_token="fake:token",
-            telegram_allowed_chat_ids="111,222,333",
+            telegram_bot_token=SecretStr("fake:token"),
+            telegram_allowed_chat_ids="111,222,333",  # type: ignore[arg-type]  # pydantic field_validator coerces str → frozenset
         )
         assert settings.telegram_allowed_chat_ids == frozenset({111, 222, 333})
 
@@ -983,8 +985,8 @@ class TestParseAllowedChatIds:
             voxnix_flake_path="/tmp/test",
             llm_provider="ollama",
             llm_model="test",
-            telegram_bot_token="fake:token",
-            telegram_allowed_chat_ids=" 111 , 222 , 333 ",
+            telegram_bot_token=SecretStr("fake:token"),
+            telegram_allowed_chat_ids=" 111 , 222 , 333 ",  # type: ignore[arg-type]
         )
         assert settings.telegram_allowed_chat_ids == frozenset({111, 222, 333})
 
@@ -995,8 +997,8 @@ class TestParseAllowedChatIds:
             voxnix_flake_path="/tmp/test",
             llm_provider="ollama",
             llm_model="test",
-            telegram_bot_token="fake:token",
-            telegram_allowed_chat_ids="12345678",
+            telegram_bot_token=SecretStr("fake:token"),
+            telegram_allowed_chat_ids="12345678",  # type: ignore[arg-type]
         )
         assert settings.telegram_allowed_chat_ids == frozenset({12345678})
 
@@ -1007,8 +1009,8 @@ class TestParseAllowedChatIds:
             voxnix_flake_path="/tmp/test",
             llm_provider="ollama",
             llm_model="test",
-            telegram_bot_token="fake:token",
-            telegram_allowed_chat_ids="",
+            telegram_bot_token=SecretStr("fake:token"),
+            telegram_allowed_chat_ids="",  # type: ignore[arg-type]
         )
         assert settings.telegram_allowed_chat_ids == frozenset()
 
@@ -1019,8 +1021,8 @@ class TestParseAllowedChatIds:
             voxnix_flake_path="/tmp/test",
             llm_provider="ollama",
             llm_model="test",
-            telegram_bot_token="fake:token",
-            telegram_allowed_chat_ids=None,
+            telegram_bot_token=SecretStr("fake:token"),
+            telegram_allowed_chat_ids=None,  # type: ignore[arg-type]
         )
         assert settings.telegram_allowed_chat_ids == frozenset()
 
@@ -1034,8 +1036,8 @@ class TestParseAllowedChatIds:
                 voxnix_flake_path="/tmp/test",
                 llm_provider="ollama",
                 llm_model="test",
-                telegram_bot_token="fake:token",
-                telegram_allowed_chat_ids="111,abc,333",
+                telegram_bot_token=SecretStr("fake:token"),
+                telegram_allowed_chat_ids="111,abc,333",  # type: ignore[arg-type]
             )
 
     def test_negative_ids_for_groups(self):
@@ -1045,8 +1047,8 @@ class TestParseAllowedChatIds:
             voxnix_flake_path="/tmp/test",
             llm_provider="ollama",
             llm_model="test",
-            telegram_bot_token="fake:token",
-            telegram_allowed_chat_ids="-100123456,111",
+            telegram_bot_token=SecretStr("fake:token"),
+            telegram_allowed_chat_ids="-100123456,111",  # type: ignore[arg-type]
         )
         assert settings.telegram_allowed_chat_ids == frozenset({-100123456, 111})
 
@@ -1057,8 +1059,8 @@ class TestParseAllowedChatIds:
             voxnix_flake_path="/tmp/test",
             llm_provider="ollama",
             llm_model="test",
-            telegram_bot_token="fake:token",
-            telegram_allowed_chat_ids="111,222,",
+            telegram_bot_token=SecretStr("fake:token"),
+            telegram_allowed_chat_ids="111,222,",  # type: ignore[arg-type]
         )
         assert settings.telegram_allowed_chat_ids == frozenset({111, 222})
 
@@ -1069,7 +1071,7 @@ class TestParseAllowedChatIds:
             voxnix_flake_path="/tmp/test",
             llm_provider="ollama",
             llm_model="test",
-            telegram_bot_token="fake:token",
+            telegram_bot_token=SecretStr("fake:token"),
             telegram_allowed_chat_ids=frozenset({111, 222}),
         )
         assert settings.telegram_allowed_chat_ids == frozenset({111, 222})

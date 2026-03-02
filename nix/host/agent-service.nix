@@ -30,7 +30,6 @@
 # See docs/architecture.md § Orchestrator Agent and § Agent Tool Architecture.
 {
   config,
-  lib,
   pkgs,
   inputs,
   voxnix-src,
