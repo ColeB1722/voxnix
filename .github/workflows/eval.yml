@@ -8,7 +8,13 @@
 # This runs async after merge so it never blocks PRs. The eval-regression
 # issue provides visibility without flooding the backlog (one issue, not N).
 #
-# Requires the OPENROUTER_API_KEY repository secret.
+# Requires at least one LLM API key as a repository secret:
+#   - OPENAI_API_KEY (preferred — judge model uses OpenAI natively)
+#   - OPENROUTER_API_KEY (fallback — aliased to OPENAI_API_KEY by conftest)
+#
+# The eval conftest auto-detects the provider from whichever key is set.
+# If both are set, OPENAI_API_KEY takes priority. LLM_PROVIDER / LLM_MODEL
+# do not need to be configured — they are inferred from the available key.
 
 name: Evals
 
@@ -29,8 +35,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  LLM_PROVIDER: openrouter
-  LLM_MODEL: anthropic/claude-haiku-4.5
+  # Pass both secrets — conftest auto-detects which is available.
+  # OPENAI_API_KEY is preferred; OPENROUTER_API_KEY is fallback.
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
 jobs:
@@ -42,11 +49,15 @@ jobs:
       - name: Check for API key
         id: check-key
         run: |
-          if [ -z "${OPENROUTER_API_KEY}" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::OPENROUTER_API_KEY not configured — skipping evals"
-          else
+          if [ -n "${OPENAI_API_KEY}" ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Using OPENAI_API_KEY (direct OpenAI)"
+          elif [ -n "${OPENROUTER_API_KEY}" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Using OPENROUTER_API_KEY (OpenRouter fallback)"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::No LLM API key configured (set OPENAI_API_KEY or OPENROUTER_API_KEY) — skipping evals"
           fi
 
       - uses: actions/checkout@v4

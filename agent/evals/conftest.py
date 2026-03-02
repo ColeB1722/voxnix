@@ -38,13 +38,43 @@ from agent.tools.cli import CommandResult
 # addopts = "-m 'not evals'" in pyproject.toml, `pytest agent/` skips
 # evals by default; `pytest -m evals -o addopts=` runs them.
 
+# ── Provider auto-detection ────────────────────────────────────────────────────
+# If LLM_PROVIDER / LLM_MODEL are already set (e.g. from .env.eval or CI env),
+# use them as-is. Otherwise, infer the provider from which API keys are present.
+#
+# Priority: OPENAI_API_KEY > OPENROUTER_API_KEY > other providers.
+# OpenAI is preferred because deepeval's judge model also uses the OpenAI
+# client — with a real OpenAI key, both the agent-under-test and the judge
+# work natively with zero aliasing.
+
+_AUTO_DETECT_ORDER: list[tuple[str, str, str]] = [
+    # (env_var_for_key, LLM_PROVIDER value, LLM_MODEL value)
+    ("OPENAI_API_KEY", "openai", "gpt-4.1-mini"),
+    ("OPENROUTER_API_KEY", "openrouter", "anthropic/claude-haiku-4.5"),
+    ("ANTHROPIC_API_KEY", "anthropic", "claude-haiku-4"),
+    ("GOOGLE_API_KEY", "google-gla", "gemini-2.0-flash"),
+    ("XAI_API_KEY", "xai", "grok-3-mini"),
+    ("GROQ_API_KEY", "groq", "llama-3.3-70b-versatile"),
+]
+
+if not os.environ.get("LLM_PROVIDER"):
+    for _key_var, _provider, _model in _AUTO_DETECT_ORDER:
+        if os.environ.get(_key_var):
+            os.environ["LLM_PROVIDER"] = _provider
+            os.environ.setdefault("LLM_MODEL", _model)
+            break
+
 # ── Judge model credentials ────────────────────────────────────────────────────
 # deepeval's default judge (gpt-4.1) uses the OpenAI client internally.
 # The OpenAI SDK reads OPENAI_API_KEY and OPENAI_BASE_URL from the env
 # (note: NOT OPENAI_API_BASE — that's a legacy LangChain convention).
-# When the eval provider is OpenRouter, we alias the OpenRouter key so
-# deepeval routes through OpenRouter's OpenAI-compatible endpoint —
-# one key in .env.eval, no duplication.
+#
+# When the agent-under-test uses OpenRouter, we alias OPENROUTER_API_KEY
+# → OPENAI_API_KEY and set OPENAI_BASE_URL so deepeval's judge also
+# routes through OpenRouter's OpenAI-compatible endpoint.
+#
+# When a real OPENAI_API_KEY is present, no aliasing is needed — deepeval
+# talks to OpenAI natively (its most battle-tested code path).
 _OPENAI_KEY_IS_ALIAS = False
 if os.environ.get("LLM_PROVIDER") == "openrouter":
     _or_key = os.environ.get("OPENROUTER_API_KEY", "")
@@ -65,11 +95,8 @@ _PROVIDER_MODELS: dict[str, tuple[str, str]] = {
     "groq": ("GROQ_API_KEY", "groq:llama-3.3-70b-versatile"),
 }
 
-# The primary provider is whatever LLM_PROVIDER is set to.
+# The primary provider — either explicitly set or auto-detected above.
 _PRIMARY_PROVIDER = os.environ.get("LLM_PROVIDER", "")
-_PRIMARY_KEY_VAR = (
-    dict(_PROVIDER_MODELS).get(_PRIMARY_PROVIDER, ("", ""))[0] if _PRIMARY_PROVIDER else ""
-)
 
 
 def _has_primary_credentials() -> bool:
@@ -109,7 +136,7 @@ def available_models() -> list[str]:
 if not _has_primary_credentials():
     # Module-level skip — pytest collects the file but skips all tests.
     pytest.skip(
-        "No eval LLM credentials configured (set LLM_PROVIDER + matching API key in .env.eval)",
+        "No eval LLM credentials configured (set an API key in .env.eval — see .env.eval.example)",
         allow_module_level=True,
     )
 
