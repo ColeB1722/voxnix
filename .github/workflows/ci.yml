@@ -1,13 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
-      - ".github/workflows/eval.yml"
-      - "LICENSE"
   pull_request:
     branches: [main]
     paths-ignore:
