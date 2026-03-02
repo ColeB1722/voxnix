@@ -13,9 +13,13 @@ check:
     treefmt --ci
     nix flake check
 
-# Run Python tests
+# Run Python tests (excludes evals — those require API keys)
 test:
     uv run pytest agent/
+
+# Run LLM evals (requires API keys in .env.eval)
+eval:
+    uv run pytest -m evals -o "addopts=" agent/evals/ -x --tb=short
 
 # Run the Telegram bot
 bot:

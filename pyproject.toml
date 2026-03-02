@@ -17,6 +17,7 @@ dev = [
     "pytest-asyncio>=0.25",
     "ruff>=0.9",
     "ty>=0.0.0a1",
+    "deepeval>=3.0",
 ]
 
 [build-system]
@@ -47,6 +48,10 @@ select = [
 testpaths = ["agent"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+addopts = "-m 'not evals'"
+markers = [
+    "evals: LLM quality evals — require API keys and a real LLM (deselected by default)",
+]
 filterwarnings = [
     # logfire.instrument_pydantic_ai() fires at import time in agent.py.
     # configure() is intentionally deferred to the entry point (agent/chat/__main__.py)

@@ -20,7 +20,7 @@ Environment variables (all injected by agenix at runtime):
                             (e.g. /var/lib/voxnix). Used by the Nix expression
                             generator to locate mkContainer.nix.
     LLM_PROVIDER          — LLM provider name as a pydantic-ai identifier
-                            (e.g. "anthropic", "openai", "google").
+                            (e.g. "anthropic", "openai", "google-gla").
     LLM_MODEL             — Model name within the provider
                             (e.g. "claude-3-5-sonnet-latest", "gpt-4o").
     TELEGRAM_BOT_TOKEN    — Telegram Bot API token for the chat integration layer.
@@ -54,11 +54,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 _PROVIDER_API_KEY_ENV: dict[str, str | None] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
-    "google": "GOOGLE_API_KEY",
+    "google-gla": "GOOGLE_API_KEY",  # Google AI Studio
+    "google-vertex": None,  # Uses Application Default Credentials (ADC)
     "mistral": "MISTRAL_API_KEY",
     "groq": "GROQ_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
-    "ollama": None,
+    "xai": "XAI_API_KEY",  # Grok
+    "cohere": "CO_API_KEY",
+    "cerebras": "CEREBRAS_API_KEY",
+    "bedrock": None,  # Uses AWS credentials chain
+    "ollama": None,  # Local, no key
 }
 
 
@@ -91,7 +96,7 @@ class VoxnixSettings(BaseSettings):
     # ── LLM provider ────────────────────────────────────────────────────────
 
     llm_provider: str
-    """LLM provider identifier (e.g. "anthropic", "openai", "google").
+    """LLM provider identifier (e.g. "anthropic", "openai", "google-gla").
     Combined with llm_model to form the pydantic-ai model string."""
 
     llm_model: str

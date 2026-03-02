@@ -26,17 +26,15 @@ See docs/architecture.md § Agent Tool Architecture and § Trust Model.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import logfire
 from pydantic_ai import Agent, RunContext
-
-from agent.config import VoxnixSettings, get_settings
-
-if TYPE_CHECKING:
-    from pydantic_ai.messages import ModelMessage
+from pydantic_ai.messages import (
+    ModelMessage,  # noqa: TC002  # pyright: ignore[reportMissingModuleSource] — runtime import: PydanticAI evaluates type hints on history_processors
+)
 
 from agent.chat.history import DEFAULT_MAX_TURN_MESSAGES
+from agent.config import VoxnixSettings, get_settings
 from agent.nix_gen.discovery import discover_modules
 from agent.nix_gen.models import ContainerSpec, validate_container_name
 from agent.tools.containers import (
@@ -538,6 +536,8 @@ async def run(
     message: str,
     owner: str,
     message_history: list[ModelMessage] | None = None,
+    *,
+    model: str | None = None,
 ) -> tuple[str, list[ModelMessage]]:
     """Run the agent for a single user message, optionally with conversation history.
 
@@ -555,6 +555,12 @@ async def run(
         message_history: Optional list of messages from previous turns in this
                          conversation. Pass the output of ``ConversationStore.get()``
                          here. If None or empty, the agent runs statelessly.
+        model: Override the PydanticAI model string
+               (e.g. ``"openrouter:anthropic/claude-haiku-4"``).
+               If None (default), reads from
+               ``VoxnixSettings.llm_model_string``. Used by evals to test
+               the same agent against different models without modifying
+               environment variables.
 
     Returns:
         A tuple of ``(output, new_messages)`` where:
@@ -564,7 +570,7 @@ async def run(
     """
     result = await agent.run(
         message,
-        model=get_settings().llm_model_string,
+        model=model or get_settings().llm_model_string,
         deps=VoxnixDeps(owner=owner),
         message_history=message_history or [],
     )
