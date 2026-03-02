@@ -5,7 +5,7 @@ Responsibilities:
   - Mock all CLI infrastructure so evals never touch a real appliance
   - Mock module discovery to return a realistic module list
   - Provide settings overrides so VoxnixSettings validates without prod secrets
-  - Detect available provider API keys for cross-model parametrization
+  - Configure the judge model (gpt-4.1) credentials from available API keys
 
 Design decisions:
   - The LLM call itself is NOT mocked — that's the entire point of evals.
@@ -16,6 +16,11 @@ Design decisions:
     them and compose a realistic response for the user.
   - Settings are patched to use LLM_PROVIDER / LLM_MODEL from the environment
     (same vars as prod), with dummy values for non-LLM fields.
+  - One model at a time: LLM_PROVIDER / LLM_MODEL control which single model
+    is tested. Defaults to openrouter / anthropic/claude-haiku-4.5 so CI only
+    needs OPENROUTER_API_KEY to auth both the test model and the judge.
+  - The judge model (deepeval's gpt-4.1) always routes through whichever
+    OpenAI-compatible key is available (OPENAI_API_KEY or OPENROUTER_API_KEY).
 
 See docs/handoff.md § Agent evals (#51) for architecture decisions.
 """
@@ -38,105 +43,80 @@ from agent.tools.cli import CommandResult
 # addopts = "-m 'not evals'" in pyproject.toml, `pytest agent/` skips
 # evals by default; `pytest -m evals -o addopts=` runs them.
 
-# ── Provider auto-detection ────────────────────────────────────────────────────
-# If LLM_PROVIDER / LLM_MODEL are already set (e.g. from .env.eval or CI env),
-# use them as-is. Otherwise, infer the provider from which API keys are present.
-#
-# Priority: OPENAI_API_KEY > OPENROUTER_API_KEY > other providers.
-# OpenAI is preferred because deepeval's judge model also uses the OpenAI
-# client — with a real OpenAI key, both the agent-under-test and the judge
-# work natively with zero aliasing.
+# ── Test model defaults ────────────────────────────────────────────────────────
+# LLM_PROVIDER and LLM_MODEL control which single model is evaluated.
+# They default to OpenRouter + Haiku 4.5 so that CI only needs one secret
+# (OPENROUTER_API_KEY) to auth both the test model and the judge.
+# Override via .env.eval or CI env vars to test a different model.
 
-_AUTO_DETECT_ORDER: list[tuple[str, str, str]] = [
-    # (env_var_for_key, LLM_PROVIDER value, LLM_MODEL value)
-    ("OPENAI_API_KEY", "openai", "gpt-4.1-mini"),
-    ("OPENROUTER_API_KEY", "openrouter", "anthropic/claude-haiku-4.5"),
-    ("ANTHROPIC_API_KEY", "anthropic", "claude-haiku-4"),
-    ("GOOGLE_API_KEY", "google-gla", "gemini-2.0-flash"),
-    ("XAI_API_KEY", "xai", "grok-3-mini"),
-    ("GROQ_API_KEY", "groq", "llama-3.3-70b-versatile"),
-]
-
-if not os.environ.get("LLM_PROVIDER"):
-    for _key_var, _provider, _model in _AUTO_DETECT_ORDER:
-        if os.environ.get(_key_var):
-            os.environ["LLM_PROVIDER"] = _provider
-            os.environ.setdefault("LLM_MODEL", _model)
-            break
+os.environ.setdefault("LLM_PROVIDER", "openrouter")
+os.environ.setdefault("LLM_MODEL", "anthropic/claude-haiku-4.5")
 
 # ── Judge model credentials ────────────────────────────────────────────────────
-# deepeval's default judge (gpt-4.1) uses the OpenAI client internally.
-# The OpenAI SDK reads OPENAI_API_KEY and OPENAI_BASE_URL from the env
-# (note: NOT OPENAI_API_BASE — that's a legacy LangChain convention).
+# deepeval's judge (gpt-4.1) uses the OpenAI client internally, which reads
+# OPENAI_API_KEY and OPENAI_BASE_URL from the environment.
 #
-# When the agent-under-test uses OpenRouter, we alias OPENROUTER_API_KEY
-# → OPENAI_API_KEY and set OPENAI_BASE_URL so deepeval's judge also
-# routes through OpenRouter's OpenAI-compatible endpoint.
+# We auto-detect credentials in priority order:
+#   1. OPENAI_API_KEY already set → use it directly (native OpenAI path)
+#   2. OPENROUTER_API_KEY set     → alias it to OPENAI_API_KEY and point
+#                                   OPENAI_BASE_URL at OpenRouter's
+#                                   OpenAI-compatible endpoint
 #
-# When a real OPENAI_API_KEY is present, no aliasing is needed — deepeval
-# talks to OpenAI natively (its most battle-tested code path).
-_OPENAI_KEY_IS_ALIAS = False
-if os.environ.get("LLM_PROVIDER") == "openrouter":
-    _or_key = os.environ.get("OPENROUTER_API_KEY", "")
-    if _or_key and not os.environ.get("OPENAI_API_KEY"):
-        os.environ["OPENAI_API_KEY"] = _or_key
-        os.environ.setdefault("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
-        _OPENAI_KEY_IS_ALIAS = True
+# This means setting just OPENROUTER_API_KEY in CI is sufficient: it
+# authenticates both the test model (via LLM_PROVIDER=openrouter) and the
+# judge (via the alias below). A real OPENAI_API_KEY takes priority if present.
 
-# ── Credential detection ───────────────────────────────────────────────────────
+_JUDGE_CREDENTIALS: list[tuple[str, str | None]] = [
+    # (env_var_for_key, OPENAI_BASE_URL override or None for native)
+    ("OPENAI_API_KEY", None),
+    ("OPENROUTER_API_KEY", "https://openrouter.ai/api/v1"),
+]
 
-# Provider → (env var for API key, PydanticAI model string prefix)
-_PROVIDER_MODELS: dict[str, tuple[str, str]] = {
-    "openrouter": ("OPENROUTER_API_KEY", "openrouter:anthropic/claude-haiku-4"),
-    "anthropic": ("ANTHROPIC_API_KEY", "anthropic:claude-haiku-4"),
-    "openai": ("OPENAI_API_KEY", "openai:gpt-4.1-mini"),
-    "google-gla": ("GOOGLE_API_KEY", "google-gla:gemini-2.0-flash"),
-    "xai": ("XAI_API_KEY", "xai:grok-3-mini"),
-    "groq": ("GROQ_API_KEY", "groq:llama-3.3-70b-versatile"),
+_judge_configured = False
+for _key_var, _base_url in _JUDGE_CREDENTIALS:
+    _key_value = os.environ.get(_key_var, "")
+    if not _key_value:
+        continue
+    if not os.environ.get("OPENAI_API_KEY"):
+        os.environ["OPENAI_API_KEY"] = _key_value
+    if _base_url is not None and not os.environ.get("OPENAI_BASE_URL"):
+        os.environ["OPENAI_BASE_URL"] = _base_url
+    _judge_configured = True
+    break
+
+# ── Credential check ──────────────────────────────────────────────────────────
+# The test model provider needs its own API key. Map provider → env var.
+
+_PROVIDER_KEY_VAR: dict[str, str] = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "google-gla": "GOOGLE_API_KEY",
+    "xai": "XAI_API_KEY",
+    "groq": "GROQ_API_KEY",
 }
 
-# The primary provider — either explicitly set or auto-detected above.
 _PRIMARY_PROVIDER = os.environ.get("LLM_PROVIDER", "")
 
 
-def _has_primary_credentials() -> bool:
-    """Check if the primary eval LLM credentials are configured."""
+def _has_credentials() -> bool:
+    """Check if the test model API key and judge credentials are configured."""
     if not _PRIMARY_PROVIDER:
         return False
-    key_var = _PROVIDER_MODELS.get(_PRIMARY_PROVIDER, (None, None))[0]
+    key_var = _PROVIDER_KEY_VAR.get(_PRIMARY_PROVIDER)
     if key_var is None:
-        # Provider doesn't need a key (e.g. ollama)
-        return bool(os.environ.get("LLM_MODEL", ""))
-    return bool(os.environ.get(key_var, ""))
+        # Unknown provider — assume it doesn't need a key (e.g. ollama)
+        return _judge_configured
+    return bool(os.environ.get(key_var, "")) and _judge_configured
 
 
-def available_models() -> list[str]:
-    """Return PydanticAI model strings for all providers with *real* keys set.
-
-    Used by cross-model parametrized tests. If only one key is configured,
-    returns a single-element list. If five keys are set, returns five models.
-
-    Skips the ``openai`` entry when OPENAI_API_KEY was set by the
-    OpenRouter alias above — that's the same key routed through
-    OpenRouter, not a real OpenAI account. Including it would produce
-    false cross-model coverage (both entries hit the same backend).
-    """
-    models: list[str] = []
-    for provider, (key_var, model_string) in _PROVIDER_MODELS.items():
-        if provider == "openai" and _OPENAI_KEY_IS_ALIAS:
-            continue
-        if os.environ.get(key_var, ""):
-            models.append(model_string)
-    return models
-
-
-# Skip the entire evals directory if no LLM credentials are available.
-# This makes `just test` (which now includes the marker exclusion) safe,
-# and also handles CI runs where secrets aren't configured.
-if not _has_primary_credentials():
-    # Module-level skip — pytest collects the file but skips all tests.
+# Skip the entire evals directory if credentials are missing.
+# This makes `just test` safe, and handles CI runs without secrets.
+if not _has_credentials():
     pytest.skip(
-        "No eval LLM credentials configured (set an API key in .env.eval — see .env.eval.example)",
+        "Eval credentials missing — need an API key for both the test model "
+        f"({_PRIMARY_PROVIDER or 'unset'}) and the judge (OPENAI_API_KEY or "
+        "OPENROUTER_API_KEY). See .env.eval.example.",
         allow_module_level=True,
     )
 

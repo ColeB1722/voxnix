@@ -12,8 +12,9 @@ and how strictly to enforce it is declared in the ``Scenario`` dataclass
 To add a new eval, add a ``Scenario`` to ``scenarios.py`` with appropriate
 ``quality_checks``. Nothing in this file needs to change.
 
-Cross-model tests reuse the same structure but parametrize over available
-provider keys. They only appear when >1 real provider key is configured.
+One model at a time: ``LLM_PROVIDER`` / ``LLM_MODEL`` control which model
+is tested (defaults to openrouter / anthropic/claude-haiku-4.5). To test
+a different model, override those env vars in ``.env.eval`` or CI secrets.
 
 All tests are marked with ``@pytest.mark.evals`` (via module-level
 ``pytestmark``) and excluded from default pytest runs.
@@ -32,7 +33,7 @@ from deepeval.metrics import GEval, ToolCorrectnessMetric
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 
 from agent.agent import run
-from agent.evals.conftest import FAKE_MODULES, available_models
+from agent.evals.conftest import FAKE_MODULES
 from agent.evals.helpers import build_test_case, extract_tool_names
 from agent.evals.scenarios import (
     ALL_SCENARIOS,
@@ -291,34 +292,3 @@ async def test_scenario(scenario: Scenario, eval_owner: str, eval_model: str):
         model=eval_model,
     )
     _run_scenario(scenario, output, messages)
-
-
-# ── Cross-model parametrized tests ─────────────────────────────────────────────
-
-_cross_models = available_models()
-
-# Only define cross-model tests if more than one real provider key is set.
-if len(_cross_models) > 1:
-
-    @pytest.mark.parametrize("model_string", _cross_models, ids=_cross_models)
-    @pytest.mark.parametrize(
-        "scenario",
-        ALL_SCENARIOS,
-        ids=_scenario_ids(ALL_SCENARIOS),
-    )
-    async def test_scenario_cross_model(
-        scenario: Scenario,
-        model_string: str,
-        eval_owner: str,
-    ):
-        """Cross-model eval — same scenarios, different providers.
-
-        Only runs when multiple real provider API keys are configured.
-        Uses the same scenario-driven evaluation as the primary tests.
-        """
-        output, messages = await run(
-            scenario.input,
-            owner=eval_owner,
-            model=model_string,
-        )
-        _run_scenario(scenario, output, messages)

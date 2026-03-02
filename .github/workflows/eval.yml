@@ -8,13 +8,13 @@
 # This runs async after merge so it never blocks PRs. The eval-regression
 # issue provides visibility without flooding the backlog (one issue, not N).
 #
-# Requires at least one LLM API key as a repository secret:
-#   - OPENAI_API_KEY (preferred — judge model uses OpenAI natively)
-#   - OPENROUTER_API_KEY (fallback — aliased to OPENAI_API_KEY by conftest)
+# Minimal setup: set OPENROUTER_API_KEY as a repository secret. That single
+# key authenticates both roles:
+#   - Test model: defaults to anthropic/claude-haiku-4.5 via OpenRouter
+#   - Judge model: gpt-4.1 via OpenRouter's OpenAI-compatible endpoint
 #
-# The eval conftest auto-detects the provider from whichever key is set.
-# If both are set, OPENAI_API_KEY takes priority. LLM_PROVIDER / LLM_MODEL
-# do not need to be configured — they are inferred from the available key.
+# To use OpenAI directly instead, set OPENAI_API_KEY and override
+# LLM_PROVIDER / LLM_MODEL in the env block below.
 
 name: Evals
 
@@ -35,8 +35,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Pass both secrets — conftest auto-detects which is available.
-  # OPENAI_API_KEY is preferred; OPENROUTER_API_KEY is fallback.
+  # Pass both secrets — conftest auto-detects judge credentials from
+  # whichever is available (OPENAI_API_KEY takes priority).
+  # OPENROUTER_API_KEY alone is sufficient: it covers both the default
+  # test model (Haiku 4.5) and the judge (gpt-4.1 via OpenRouter).
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
