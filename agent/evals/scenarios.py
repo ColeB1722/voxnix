@@ -54,16 +54,6 @@ class Metric(StrEnum):
     NO_HALLUCINATED_MODULES = "NoHallucinatedModules"
 
 
-# Re-export members at module level for backward compatibility.
-# Existing imports like ``from scenarios import NO_RAW_ERRORS`` keep working.
-NO_RAW_ERRORS = Metric.NO_RAW_ERRORS
-NO_MARKDOWN = Metric.NO_MARKDOWN
-CONCISENESS = Metric.CONCISENESS
-CONTAINER_NAME = Metric.CONTAINER_NAME
-EMOJI_INDICATORS = Metric.EMOJI_INDICATORS
-NO_HALLUCINATED_MODULES = Metric.NO_HALLUCINATED_MODULES
-
-
 @dataclass(frozen=True)
 class QualityCheck:
     """A single response quality expectation attached to a scenario.
@@ -86,10 +76,10 @@ class QualityCheck:
 def _baseline() -> list[QualityCheck]:
     """Checks that apply to every scenario: no errors, no markdown, concise, no hallucinations."""
     return [
-        QualityCheck(NO_RAW_ERRORS, "must"),
-        QualityCheck(NO_MARKDOWN, "must"),
-        QualityCheck(CONCISENESS, "must"),
-        QualityCheck(NO_HALLUCINATED_MODULES, "should"),
+        QualityCheck(Metric.NO_RAW_ERRORS, "must"),
+        QualityCheck(Metric.NO_MARKDOWN, "must"),
+        QualityCheck(Metric.CONCISENESS, "must"),
+        QualityCheck(Metric.NO_HALLUCINATED_MODULES, "should"),
     ]
 
 
@@ -97,7 +87,7 @@ def _with_container_name() -> list[QualityCheck]:
     """Baseline + container name must be present in the response."""
     return [
         *_baseline(),
-        QualityCheck(CONTAINER_NAME, "must"),
+        QualityCheck(Metric.CONTAINER_NAME, "must"),
     ]
 
 
@@ -105,8 +95,8 @@ def _with_container_name_and_emoji() -> list[QualityCheck]:
     """Baseline + container name + emoji indicators (lifecycle operations)."""
     return [
         *_baseline(),
-        QualityCheck(CONTAINER_NAME, "must"),
-        QualityCheck(EMOJI_INDICATORS, "should"),
+        QualityCheck(Metric.CONTAINER_NAME, "must"),
+        QualityCheck(Metric.EMOJI_INDICATORS, "should"),
     ]
 
 
@@ -114,7 +104,7 @@ def _with_emoji() -> list[QualityCheck]:
     """Baseline + emoji indicators (lifecycle without a specific container query)."""
     return [
         *_baseline(),
-        QualityCheck(EMOJI_INDICATORS, "should"),
+        QualityCheck(Metric.EMOJI_INDICATORS, "should"),
     ]
 
 

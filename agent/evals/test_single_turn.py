@@ -37,12 +37,6 @@ from agent.evals.conftest import FAKE_MODULES
 from agent.evals.helpers import build_test_case, extract_tool_names
 from agent.evals.scenarios import (
     ALL_SCENARIOS,
-    CONCISENESS,
-    CONTAINER_NAME,
-    EMOJI_INDICATORS,
-    NO_HALLUCINATED_MODULES,
-    NO_MARKDOWN,
-    NO_RAW_ERRORS,
     Metric,
     Scenario,
 )
@@ -60,8 +54,8 @@ _DISPLAY_CFG = DisplayConfig(print_results=False, show_indicator=False)
 _tool_correctness = ToolCorrectnessMetric(threshold=0.7)
 
 _METRICS: dict[Metric, GEval] = {
-    NO_RAW_ERRORS: GEval(
-        name=NO_RAW_ERRORS,
+    Metric.NO_RAW_ERRORS: GEval(
+        name=Metric.NO_RAW_ERRORS,
         criteria=(
             "The response must not contain raw error output, stack traces, Python "
             "tracebacks, CLI stderr strings, file paths like /nix/store/..., or "
@@ -74,8 +68,8 @@ _METRICS: dict[Metric, GEval] = {
         evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT],
         threshold=0.7,
     ),
-    NO_MARKDOWN: GEval(
-        name=NO_MARKDOWN,
+    Metric.NO_MARKDOWN: GEval(
+        name=Metric.NO_MARKDOWN,
         criteria=(
             "The response must not use Markdown formatting. Specifically: "
             "no **bold** markers, no *italic* markers, no `backtick` inline code, "
@@ -88,8 +82,8 @@ _METRICS: dict[Metric, GEval] = {
         evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT],
         threshold=0.7,
     ),
-    CONCISENESS: GEval(
-        name=CONCISENESS,
+    Metric.CONCISENESS: GEval(
+        name=Metric.CONCISENESS,
         criteria=(
             "The response should be concise and to the point. For simple operations "
             "(creating, starting, stopping, destroying a container, listing workloads, "
@@ -101,8 +95,8 @@ _METRICS: dict[Metric, GEval] = {
         evaluation_params=[LLMTestCaseParams.INPUT, LLMTestCaseParams.ACTUAL_OUTPUT],
         threshold=0.7,
     ),
-    CONTAINER_NAME: GEval(
-        name=CONTAINER_NAME,
+    Metric.CONTAINER_NAME: GEval(
+        name=Metric.CONTAINER_NAME,
         criteria=(
             "When the user's request involves a specific container by name, "
             "the response must include that container name. For example, if the "
@@ -113,8 +107,8 @@ _METRICS: dict[Metric, GEval] = {
         evaluation_params=[LLMTestCaseParams.INPUT, LLMTestCaseParams.ACTUAL_OUTPUT],
         threshold=0.7,
     ),
-    EMOJI_INDICATORS: GEval(
-        name=EMOJI_INDICATORS,
+    Metric.EMOJI_INDICATORS: GEval(
+        name=Metric.EMOJI_INDICATORS,
         criteria=(
             "Success responses should include a positive indicator like a checkmark "
             "emoji or similar success symbol. Failure responses should include a "
@@ -125,8 +119,8 @@ _METRICS: dict[Metric, GEval] = {
         evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT],
         threshold=0.5,
     ),
-    NO_HALLUCINATED_MODULES: GEval(
-        name=NO_HALLUCINATED_MODULES,
+    Metric.NO_HALLUCINATED_MODULES: GEval(
+        name=Metric.NO_HALLUCINATED_MODULES,
         criteria=(
             "If the response mentions workload module names, they must be from the "
             f"available set: {', '.join(FAKE_MODULES)}. The response must not "
