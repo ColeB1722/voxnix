@@ -20,7 +20,7 @@ Environment variables (all injected by agenix at runtime):
                             (e.g. /var/lib/voxnix). Used by the Nix expression
                             generator to locate mkContainer.nix.
     LLM_PROVIDER          — LLM provider name as a pydantic-ai identifier
-                            (e.g. "anthropic", "openai", "google").
+                            (e.g. "anthropic", "openai", "google-gla").
     LLM_MODEL             — Model name within the provider
                             (e.g. "claude-3-5-sonnet-latest", "gpt-4o").
     TELEGRAM_BOT_TOKEN    — Telegram Bot API token for the chat integration layer.
@@ -96,7 +96,7 @@ class VoxnixSettings(BaseSettings):
     # ── LLM provider ────────────────────────────────────────────────────────
 
     llm_provider: str
-    """LLM provider identifier (e.g. "anthropic", "openai", "google").
+    """LLM provider identifier (e.g. "anthropic", "openai", "google-gla").
     Combined with llm_model to form the pydantic-ai model string."""
 
     llm_model: str

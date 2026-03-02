@@ -198,5 +198,5 @@ async def test_multi_turn(
         warnings.warn(
             f"Multi-turn knowledge retention low for '{scenario.id}' "
             f"(score={score:.2f}, threshold=0.5): {reason}",
-            stacklevel=1,
+            stacklevel=2,
         )
