@@ -15,9 +15,11 @@ You are working on **voxnix** — an agentic NixOS container orchestrator. A Tel
 
 **Appliance:** `192.168.8.157` (Hyper-V Gen 2 VM, 16GB RAM) — ⚠️ IP rotates via DHCP, see #89
 **Agent service:** active, Telegram bot responding
-**Current branch:** `main` — PR #96 merged, PR for pipefail fix pending
-**Last known good container:** `dev` running, Tailscale enrolled at `100.83.13.65` (this IP changes on re-enrollment)
-**Eval CI:** running post-merge on main, but issue reporting was broken until pipefail fix (see this session notes)
+**Current branch:** `feat/telegram-access-control` — PR #104 open, pending review
+**Last known good containers:** `dev` (10.100.0.101, Tailscale 100.83.13.65) and `tail-test` (10.100.0.175, Tailscale 100.72.23.55) — both running. Both pre-date PR #84 so lack `VOXNIX_MODULES` env var (module query returns empty).
+**Eval CI:** fully operational — pipefail fix deployed, `issues: write` permission added, auto-creates `eval-regression` issues on failure. Issue #102 is the first real regression report.
+**Last deploy:** PR #103 deployed to appliance — fixes `NameError: ModelMessage` that broke all agent responses.
+**Access control:** PR #104 implements #61 — bot is locked by default until `TELEGRAM_ALLOWED_CHAT_IDS` is added to agenix secrets. **Not yet deployed** — merge PR #104 and add the env var to unlock.
 
 ---
 
@@ -40,9 +42,49 @@ All 6 MVP build steps from `docs/architecture.md` are implemented and verified. 
 
 ## What was built (cumulative)
 
-### This session — PR #96 (feat/evals, merged) + pipefail fix (pending PR)
+### This session — PR #104 (feat/telegram-access-control, open)
 
-Implements #51. Full deepeval LLM quality eval suite with post-merge CI.
+Implements #61. Telegram access control via chat_id allowlist — fail-closed gate handler.
+
+**Config (`agent/config.py`):**
+- `TELEGRAM_ALLOWED_CHAT_IDS` env var — comma-separated chat IDs parsed into `frozenset[int]` via `@field_validator(mode="before")`
+- `is_chat_authorized(chat_id: int) -> bool` convenience method on `VoxnixSettings`
+- Fail-closed: empty or unset allowlist denies ALL users — bot locked by default
+- Full input validation: non-integer tokens raise `ValueError` at startup, trailing commas and whitespace handled gracefully
+
+**Gate handler (`agent/chat/handlers.py`):**
+- `check_access()` — registered as `TypeHandler(Update, ...)` in handler group -1 (runs before all group 0 handlers)
+- Raises `ApplicationHandlerStop` for unauthorized `chat_id`s — no downstream handler fires
+- Silent drop — does not reply to unauthorized users (no info leak to strangers)
+- Logs denied attempts at WARNING level with the `chat_id`
+- Handles edge case: `effective_chat is None` → blocked
+
+**Defense-in-depth (`agent/chat/bot.py`):**
+- `filters.Chat(chat_id=...)` applied to catch-all agent dispatch handler when allowlist is configured
+- Independent of the gate handler — even if the gate is accidentally removed, PTB's filter layer blocks unauthorized chats
+- Uses `filters.Chat` (not `filters.User`) — matches `effective_chat.id` correctly for both private and group chats (CodeRabbit finding, fixed)
+
+**Documentation:**
+- `nix/host/agent-service.nix` — documented `TELEGRAM_ALLOWED_CHAT_IDS` in EnvironmentFile comment
+- `secrets/secrets.nix` — added to key-value line documentation
+
+**Tests:** 22 new tests across 4 classes:
+- `TestCheckAccess` (7): authorized pass-through, unauthorized block, empty allowlist denial, no-effective-chat block, silent drop, logging, negative group IDs
+- `TestIsChatAuthorized` (4): authorized/unauthorized/empty/negative IDs
+- `TestParseAllowedChatIds` (9): comma-separated, spaces, single ID, empty, None, non-integer error, negative IDs, trailing comma, frozenset passthrough
+- `TestBuildApplicationAccessControl` (2): gate in group -1, group ordering
+- Updated 3 existing `TestBuildApplication` tests to mock `get_settings()`
+- **410 passed**, 0 failures, ruff clean
+
+**CodeRabbit review:** 2 findings, both fixed:
+1. Misleading `_EMPTY_CHAT_IDS` sentinel comment — simplified
+2. `filters.User` vs `filters.Chat` mismatch — replaced with `filters.Chat` (correct for group chats)
+
+**Deploy instructions:** Add `TELEGRAM_ALLOWED_CHAT_IDS=<your_chat_id>` to `agenix -e agent-env.age`. Without it, the bot denies everyone (safe default).
+
+### Previous session — PRs #96, #99, #100, #101, #103 (all merged + deployed)
+
+Implements #51. Full deepeval LLM quality eval suite with post-merge CI. Plus CI workflow fixes and a production hotfix.
 
 **Eval infrastructure (`agent/evals/`):**
 - `scenarios.py` — `Scenario` / `MultiTurnScenario` dataclasses with `Metric(StrEnum)` for type-safe quality checks. 19 single-turn scenarios across 5 categories (query, diagnostics, lifecycle, storage, edge cases) + 2 multi-turn scenarios
@@ -58,7 +100,15 @@ Implements #51. Full deepeval LLM quality eval suite with post-merge CI.
 - Evals excluded from default `pytest` runs via marker + `addopts`; run with `just eval`
 - Scenarios are pure data — adding an eval means adding a `Scenario`, nothing else changes
 
-**Bug found + fixed:** `eval.yml` pipeline (`pytest | tee eval-output.txt`) masked pytest's exit code — `tee` always returns 0, so `continue-on-error` never triggered, no regression issues were ever created, and status always reported "✅ All evals passed" even with failures. Fixed with `set -o pipefail`.
+**CI fixes (PRs #99, #100, #101):**
+- `eval.yml` pipeline (`pytest | tee eval-output.txt`) masked pytest's exit code — `tee` always returns 0, so `continue-on-error` never triggered. Fixed with `set -o pipefail` (PR #99).
+- `eval.yml` lacked `permissions: issues: write` — `gh label create` and `gh issue create` failed with HTTP 403. Fixed in PR #100.
+- `eval.yml` added to its own `paths` trigger so workflow changes re-run evals.
+- `ci.yml` removed redundant `push: branches: [main]` trigger — PRs already gate main, post-merge runs were wasting runner minutes (PR #101).
+- `ci.yml` added `paths-ignore` for `docs/**`, `*.md`, `.github/workflows/eval.yml`, `LICENSE`.
+
+**Production hotfix (PR #103):**
+- `from __future__ import annotations` in `agent.py` caused `NameError: name 'ModelMessage' is not defined` at runtime. PydanticAI inspects `keep_recent_turns` type hints via `eval()`, but deferred annotations made `ModelMessage` unresolvable. Removed the future import — Python 3.12 natively supports all type syntax used. Agent was broken in production until this deploy.
 
 **Refactors during session:**
 - Simplified provider auto-detection (removed 6-provider detection, cross-model infra)
@@ -67,6 +117,8 @@ Implements #51. Full deepeval LLM quality eval suite with post-merge CI.
 - CodeRabbit findings fixed: `config.py` docstring provider examples, `test_multi_turn.py` stacklevel consistency
 
 **Tests:** 388 passed, evals skipped without API keys. Zero lint errors.
+
+**Live validation:** Agent responding correctly via Telegram. Container list, query, and conversation history all working. Module query returns empty for pre-#84 containers (expected — `VOXNIX_MODULES` not baked in). New containers will report modules correctly.
 
 ### Previous session — PR #84 (feat/agent-improvements, merged)
 
@@ -175,6 +227,14 @@ Implements #48, #62, #47, #54, #81. Agent goes from stateless command executor �
 
 ## Architecture decisions made this session
 
+### Access control: fail-closed gate handler in group -1 (#61)
+The standard Telegram bot pattern is a chat_id allowlist. We use a `TypeHandler` in PTB handler group -1 as a single gate — it runs before all group 0 handlers (/start, /help, agent dispatch). `ApplicationHandlerStop` blocks all downstream processing for unauthorized users. The allowlist is a `frozenset[int]` parsed from a comma-separated env var (`TELEGRAM_ALLOWED_CHAT_IDS`), injected via agenix. Fail-closed: empty/unset denies everyone. Belt-and-suspenders: `filters.Chat` also applied to the catch-all agent dispatch handler.
+
+### Silent drop over denial message for unauthorized users
+The gate handler does NOT reply to unauthorized users. Sending a denial message (e.g. "Access denied") confirms the bot exists to strangers — an information leak. Silent drop is the safer choice for a personal/homelab bot. The admin sees denied attempts in the WARNING logs.
+
+## Architecture decisions made in previous sessions
+
 ### Eval design: single model, OpenRouter defaults, no cross-model parametrization
 Simplified from the initial plan (which had 6-provider auto-detection and cross-model tests) to a focused single-model design:
 - `LLM_PROVIDER`/`LLM_MODEL` default to `openrouter`/`anthropic/claude-haiku-4.5`
@@ -249,15 +309,15 @@ Tagged devices (`tag:shared`) have **key expiry disabled by default** in Tailsca
 
 ## What to work on next (priority order)
 
-### 1. Fix eval baseline regressions — High (immediate)
+### 1. Deploy PR #104 (access control) — High (immediate)
+Merge PR #104, add `TELEGRAM_ALLOWED_CHAT_IDS=<admin_chat_id>` to agenix secrets, deploy. The bot is currently locked (denies everyone) until the env var is set.
+
+### 2. Fix eval baseline regressions — High (immediate)
 The first real CI eval run (with pipefail fix) will surface the same 4 failures seen in the broken run. These are real agent quality issues, not eval bugs:
 - **#92** — Agent uses Markdown formatting (NoMarkdown failures on `query-tell-me-about`, `diag-why-cant-create`, `edge-whats-happening`). Fix: strengthen system prompt anti-Markdown instructions.
 - **#93** — Agent too verbose for simple ops (Conciseness failure on `diag-why-cant-create`). Fix: system prompt guidance on brevity.
 - `status-is-running` — agent called `tool_list_workloads` instead of `tool_get_container_status`. Fix: tool docstring disambiguation or system prompt guidance.
 - **#97** — Add MUST NOT scenarios for welcome-prompt and confirmation-prompt regressions (coverage gap from #51 spec).
-
-### 2. Telegram access control (#61) — High (security)
-Anyone who discovers the bot can currently create containers on the appliance. Add an allowlist of authorized Telegram chat IDs (env var or agenix secret). This is the single biggest security gap — ownership scoping is already wired through, but there's no gate on who can talk to the bot in the first place.
 
 ### 3. Eval coverage expansion — High
 - **#94** — Multi-turn knowledge retention scores 0.00. Investigate whether message history threading in evals matches Telegram bot behavior, and whether KnowledgeRetentionMetric thresholds need tuning.
@@ -298,7 +358,7 @@ Decouple Telegram bot from the agent via fasta2a. Evals are now in place as a sa
 | # | Title | Priority |
 |---|-------|----------|
 | #91 | Evaluate Python project structure for multi-agent scalability | Medium |
-| #61 | Telegram access control — allowlist authorized chat IDs | **High (security)** |
+| #61 | Telegram access control — allowlist authorized chat IDs | **PR #104 open** |
 | #89 | Appliance IP rotates via DHCP — static IP or Host Tailscale | Medium (ops) |
 | #88 | Decide where conversation history lives post-A2A | Architectural (deferred) |
 | #85 | Enforce PR approval via branch protection rules | Medium (ops) |
@@ -330,7 +390,7 @@ Decouple Telegram bot from the agent via fasta2a. Evals are now in place as a sa
 | #65 | Git worktree support | Low |
 | #64 | BYOM (bring your own modules) | Low |
 | #63 | iOS/Android native app | Low/idea |
-| #61 | Zero trust auth layer for Telegram | Medium |
+| #61 | Zero trust auth layer for Telegram | **PR #104 open** |
 | #55 | iOS/Android widget display | Low/idea |
 | #34 | Configurable observability backend | Low |
 | #32 | Custom installer ISO | Low/idea |
@@ -352,7 +412,8 @@ Decouple Telegram bot from the agent via fasta2a. Evals are now in place as a sa
 | #9  | warnings.warn stacklevel | Minor |
 | #6  | Explicit @pytest.mark.asyncio markers | Low |
 
-**Closed this session:** #51 (automated LLM quality evals)
+**Closed this session:** #61 (Telegram access control — PR #104)
+**Closed previous session:** #51 (automated LLM quality evals)
 **Previously closed:** #48, #47, #54, #62, #81, #68, #60, #46, #52, #12
 
 ---
