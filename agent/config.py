@@ -52,9 +52,8 @@ from functools import lru_cache
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Sentinel for "no allowlist configured" — distinct from an empty set (which
-# means "deny everyone explicitly").  We use frozenset() as the default and
-# treat it as fail-closed: if you don't configure an allowlist, nobody gets in.
+# Default empty allowlist. Fail-closed: if you don't configure an allowlist,
+# nobody gets in (both unset and explicitly empty deny everyone).
 _EMPTY_CHAT_IDS: frozenset[int] = frozenset()
 
 # Mapping from provider name → expected API key environment variable.

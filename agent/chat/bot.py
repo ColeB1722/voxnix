@@ -22,9 +22,9 @@ Access control (#61):
   ApplicationHandlerStop and no downstream handler ever fires.
 
   As belt-and-suspenders, the catch-all agent dispatch handler also carries a
-  filters.User allowlist when configured. This is defense-in-depth — even if
+  filters.Chat allowlist when configured. This is defense-in-depth — even if
   the gate handler is accidentally removed or bypassed, the agent dispatch
-  handler independently rejects unauthorized users.
+  handler independently rejects unauthorized chats.
 
 See docs/architecture.md § Chat Integration Layer and § Trust Model.
 """
@@ -90,14 +90,16 @@ def build_application(token: str) -> Application:
     # excludes messages that start with "/" so commands don't double-fire.
     #
     # Belt-and-suspenders: if an allowlist is configured, also apply
-    # filters.User so PTB itself rejects unauthorized users at the filter
+    # filters.Chat so PTB itself rejects unauthorized chats at the filter
     # level — defense-in-depth independent of the gate handler.
+    # filters.Chat checks effective_chat.id (matching check_access), unlike
+    # filters.User which checks effective_user.id — those differ in groups.
     text_filter = filters.TEXT & ~filters.COMMAND
 
     settings = get_settings()
     allowed_ids = settings.telegram_allowed_chat_ids
     if allowed_ids:
-        text_filter = text_filter & filters.User(user_id=list(allowed_ids))
+        text_filter = text_filter & filters.Chat(chat_id=list(allowed_ids))
 
     application.add_handler(MessageHandler(text_filter, handle_message))
 
