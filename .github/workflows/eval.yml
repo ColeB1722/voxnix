@@ -47,6 +47,8 @@ jobs:
   eval:
     name: LLM quality evals
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
 
     steps:
       - name: Check for API key
