@@ -25,6 +25,7 @@ on:
       - "agent/**"
       - "pyproject.toml"
       - "uv.lock"
+      - ".github/workflows/eval.yml"
 
   # Allow manual runs for debugging or re-baselining.
   workflow_dispatch:
