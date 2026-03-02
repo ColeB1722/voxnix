@@ -15,9 +15,9 @@ You are working on **voxnix** — an agentic NixOS container orchestrator. A Tel
 
 **Appliance:** `192.168.8.157` (Hyper-V Gen 2 VM, 16GB RAM) — ⚠️ IP rotates via DHCP, see #89
 **Agent service:** active, Telegram bot responding
-**Current branch:** `main` — PR #84 merged and deployed
+**Current branch:** `main` — PR #96 merged, PR for pipefail fix pending
 **Last known good container:** `dev` running, Tailscale enrolled at `100.83.13.65` (this IP changes on re-enrollment)
-**PR #84 deployed** ✅ — agent service restarted, new code live on appliance. Existing containers lack `VOXNIX_MODULES` env var (pre-#84 builds) — will appear on next container create/recreate.
+**Eval CI:** running post-merge on main, but issue reporting was broken until pipefail fix (see this session notes)
 
 ---
 
@@ -40,7 +40,35 @@ All 6 MVP build steps from `docs/architecture.md` are implemented and verified. 
 
 ## What was built (cumulative)
 
-### This session — PR #84 (feat/agent-improvements, pending review)
+### This session — PR #96 (feat/evals, merged) + pipefail fix (pending PR)
+
+Implements #51. Full deepeval LLM quality eval suite with post-merge CI.
+
+**Eval infrastructure (`agent/evals/`):**
+- `scenarios.py` — `Scenario` / `MultiTurnScenario` dataclasses with `Metric(StrEnum)` for type-safe quality checks. 19 single-turn scenarios across 5 categories (query, diagnostics, lifecycle, storage, edge cases) + 2 multi-turn scenarios
+- `helpers.py` — PydanticAI → deepeval bridge using `ModelResponse.tool_calls` (native property, not manual part iteration). `extract_tool_calls`, `extract_tool_names`, `build_test_case`
+- `conftest.py` — single-model eval design: `LLM_PROVIDER`/`LLM_MODEL` default to `openrouter`/`anthropic/claude-haiku-4.5`. Judge model (gpt-4.1) auto-detects credentials from `OPENAI_API_KEY` or `OPENROUTER_API_KEY` (aliased). All CLI infrastructure fully mocked; LLM call is real
+- `test_single_turn.py` — scenario-driven eval runner with `ToolCorrectnessMetric` + 6 `GEval` response quality metrics, tier-based enforcement (must → assert, should → warn)
+- `test_multi_turn.py` — conversation context retention via deepeval `ConversationalTestCase` + `KnowledgeRetentionMetric` (informational, warn-only)
+- `.github/workflows/eval.yml` — post-merge CI, auto-creates/updates `eval-regression` GitHub issue on failure, auto-closes on pass
+
+**Key design decisions:**
+- One model at a time (no cross-model parametrization) — simpler, cheaper
+- CI only needs `OPENROUTER_API_KEY` — covers both test model and judge
+- Evals excluded from default `pytest` runs via marker + `addopts`; run with `just eval`
+- Scenarios are pure data — adding an eval means adding a `Scenario`, nothing else changes
+
+**Bug found + fixed:** `eval.yml` pipeline (`pytest | tee eval-output.txt`) masked pytest's exit code — `tee` always returns 0, so `continue-on-error` never triggered, no regression issues were ever created, and status always reported "✅ All evals passed" even with failures. Fixed with `set -o pipefail`.
+
+**Refactors during session:**
+- Simplified provider auto-detection (removed 6-provider detection, cross-model infra)
+- `helpers.py` — use `ModelResponse.tool_calls` property, drop `ToolCallPart` import, remove unused `extract_final_output`
+- Metric names → `Metric(StrEnum)` with typed `QualityCheck.metric` field
+- CodeRabbit findings fixed: `config.py` docstring provider examples, `test_multi_turn.py` stacklevel consistency
+
+**Tests:** 388 passed, evals skipped without API keys. Zero lint errors.
+
+### Previous session — PR #84 (feat/agent-improvements, merged)
 
 Implements #48, #62, #47, #54, #81. Agent goes from stateless command executor → conversational infrastructure assistant with self-diagnosis.
 
@@ -147,42 +175,21 @@ Implements #48, #62, #47, #54, #81. Agent goes from stateless command executor �
 
 ## Architecture decisions made this session
 
-### Eval framework: deepeval, not hand-rolled pytest (#51)
-Evaluated two approaches for agent evals: (a) hand-rolled pytest harness using PydanticAI's TestModel/FunctionModel with manual assertions on tool selection, vs (b) deepeval framework with built-in metrics.
+### Eval design: single model, OpenRouter defaults, no cross-model parametrization
+Simplified from the initial plan (which had 6-provider auto-detection and cross-model tests) to a focused single-model design:
+- `LLM_PROVIDER`/`LLM_MODEL` default to `openrouter`/`anthropic/claude-haiku-4.5`
+- Judge model (deepeval's gpt-4.1) auto-detects from `OPENAI_API_KEY` (native) or `OPENROUTER_API_KEY` (aliased via `OPENAI_BASE_URL`)
+- CI needs exactly one secret (`OPENROUTER_API_KEY`) to auth both roles
+- Cross-model parametrization removed — adds complexity for marginal value at this stage. Override `LLM_PROVIDER`/`LLM_MODEL` env vars to test a different model.
 
-**Decision: deepeval.** Rationale:
-- `ToolCorrectnessMetric` evaluates tool selection + argument correctness out of the box
-- `TaskCompletionMetric` evaluates whether the user's goal was actually accomplished — this matters more than which tool was called
-- Conversational metrics (Knowledge Retention, Conversation Completeness, Role Adherence) are directly relevant to conversation history (#48)
-- 0-1 scoring with thresholds and LLM-generated explanations beats binary pass/fail for debugging prompt/docstring regressions
-- Iteration tracking via Confident AI platform enables comparing results across PRs
-- `deepeval test run` integrates with CI pipelines (#53)
+### Metric names as StrEnum
+Bare string constants for metric names replaced with `Metric(StrEnum)`. `QualityCheck.metric` typed as `Metric` instead of `str`. Catches typos at definition time instead of runtime dict lookup. `StrEnum` is a `str` subclass so it's a drop-in replacement for dict keys, GEval `name=`, and f-strings.
 
-**What NOT to do:**
-- Don't use PydanticAI's `TestModel(call_tools=[...])` for evals — telling the model which tool to call and then asserting it called that tool is circular. TestModel-based tests are integration tests for tool wiring, not evals. Keep them in `agent/tests/`.
-- Don't hand-roll tool selection assertions in pytest — deepeval's metrics are purpose-built for this.
+### PydanticAI message helpers: use native properties
+`ModelResponse.tool_calls` is a first-class property that already filters to `ToolCallPart` instances. The original `extract_tool_calls` manually iterated `msg.parts` with `isinstance` checks — unnecessary. `extract_final_output` was dead code (callers use `result.output` directly). Helpers now only exist for the PydanticAI → deepeval `ToolCall` format bridge.
 
-**Lean start plan:**
-1. Add `deepeval` as a dev dependency
-2. Define 15 scenarios as `LLMTestCase` / `Golden` objects covering the tool overlap surface (query vs status vs list, diagnostics routing, lifecycle commands)
-3. Start with `ToolCorrectnessMetric` and `TaskCompletionMetric` only
-4. Gate LLM evals behind API key presence in CI (evals use an LLM-as-judge, separate from the agent's model)
-5. Expand to conversational metrics and G-Eval for response quality once the baseline is established
-
-**Key scenarios to cover** (identified during this session):
-- "Tell me about dev" → `tool_query_container` (not `tool_get_container_status`, not `tool_list_workloads`)
-- "What modules does dev have?" → `tool_query_container`
-- "Is dev running?" → `tool_get_container_status`
-- "What containers do I have?" → `tool_list_workloads`
-- "Container ops keep failing, what's wrong?" → `tool_check_host_health`
-- "Show me the logs for dev" → `tool_get_container_logs`
-- "Is Tailscale working on dev?" → `tool_get_tailscale_status`
-- "Is the nix-daemon service running?" → `tool_check_service`
-- Multi-turn: create container → "what modules does it have?" (context carryover)
-- Multi-turn: check status → "show me the logs" (diagnostic escalation)
-- Edge: "How is dev doing?" (broad → should prefer query over status)
-- Edge: "What's the Tailscale IP for dev?" (query or tailscale_status, not list)
-- All 6 lifecycle commands (create, destroy, start, stop + unambiguous variants)
+### Previous session — Eval framework: deepeval, not hand-rolled pytest (#51)
+Decision: deepeval over hand-rolled pytest. `ToolCorrectnessMetric` for tool selection, `GEval` for response quality with LLM-as-judge scoring. PydanticAI's `TestModel` is for integration tests (tool wiring), not evals. See PR #96 for the full implementation.
 
 ### Appliance IP rotates via DHCP (#89)
 Host uses `networking.useDHCP = true` — IP changes on lease expiry or reboot (was `.146`, now `.157`). Three fix paths: static IP in NixOS config, DHCP reservation on router, or Host Tailscale (#17) making LAN IP irrelevant. Tracked in #89.
@@ -242,88 +249,107 @@ Tagged devices (`tag:shared`) have **key expiry disabled by default** in Tailsca
 
 ## What to work on next (priority order)
 
-### 0. PR #84 deployed ✅ — Live validation pending
-PR #84 is merged and deployed. Agent service restarted with new code. Needs live validation via Telegram: test conversation history persistence across turns, new diagnostic tools, container query with `VOXNIX_MODULES` (requires creating a new container — existing ones pre-date the env var).
+### 1. Fix eval baseline regressions — High (immediate)
+The first real CI eval run (with pipefail fix) will surface the same 4 failures seen in the broken run. These are real agent quality issues, not eval bugs:
+- **#92** — Agent uses Markdown formatting (NoMarkdown failures on `query-tell-me-about`, `diag-why-cant-create`, `edge-whats-happening`). Fix: strengthen system prompt anti-Markdown instructions.
+- **#93** — Agent too verbose for simple ops (Conciseness failure on `diag-why-cant-create`). Fix: system prompt guidance on brevity.
+- `status-is-running` — agent called `tool_list_workloads` instead of `tool_get_container_status`. Fix: tool docstring disambiguation or system prompt guidance.
+- **#97** — Add MUST NOT scenarios for welcome-prompt and confirmation-prompt regressions (coverage gap from #51 spec).
 
-### 1. Agent evals (#51) — High (next session)
-**Framework: deepeval** (decision made this session — see Architecture Decisions above).
-Add `deepeval` as dev dependency. Define 15 scenarios as `LLMTestCase`/`Golden` objects. Start with `ToolCorrectnessMetric` + `TaskCompletionMetric`. Gate LLM evals behind API key in CI. Every future PR should include eval cases alongside features.
+### 2. Eval coverage expansion — High
+- **#94** — Multi-turn knowledge retention scores 0.00. Investigate whether message history threading in evals matches Telegram bot behavior, and whether KnowledgeRetentionMetric thresholds need tuning.
+- **#97** — Add `NoWelcomePrompt` and `NoConfirmationPrompt` GEval metrics + scenarios.
 
-### 2. Host Tailscale (#17) — Medium
+### 3. Host Tailscale (#17) — Medium
 Add `services.tailscale.enable = true` to host NixOS config. Enables out-of-LAN `just deploy` and SSH break-glass. Small, orthogonal to everything. Also mitigates #89 (DHCP IP rotation) by providing a stable Tailscale IP.
 
-### 3. GitHub Deployment Action (#53) — Medium
+### 4. GitHub Deployment Action (#53) — Medium
 Deploy on merge to main via GitHub Actions. Combined with #17, removes LAN dependency.
 
-### 4. Quick cleanup batch — Low effort
+### 5. Quick cleanup batch — Low effort
 - #57 — Consolidate `validate_container_name` into `ContainerSpec`
 - #83 — Replace stdout-parsing install detection with conf-file check
 - #22 — Parameterize hardcoded values in host config
 - #89 — Fix appliance DHCP IP rotation (static IP or rely on #17)
+- #95 — Pin DeterminateSystems CI actions to specific versions
 
-### 5. A2A modularization (#67) — Architectural, 2-3 sessions
-Decouple Telegram bot from the agent via fasta2a. Do this WITH evals in place so you have a safety net. The conversation history decision (#88) becomes relevant here.
+### 6. A2A modularization (#67) — Architectural, 2-3 sessions
+Decouple Telegram bot from the agent via fasta2a. Evals are now in place as a safety net. The conversation history decision (#88) becomes relevant here.
 
 ---
 
 ## Open issues summary
 
+**Eval-related (new this session):**
+
 | # | Title | Priority |
 |---|-------|----------|
+| #97 | eval: add MUST NOT scenarios (welcome-prompt, confirmation-prompt) | High |
+| #95 | ops: pin DeterminateSystems CI actions to specific versions | Low |
+| #94 | eval: multi-turn knowledge retention scores 0.00 on baseline | Medium |
+| #93 | fix: agent responses too verbose for simple operations | High |
+| #92 | fix: agent uses Markdown formatting (raw text in Telegram) | High |
+
+**Infrastructure / ops:**
+
+| # | Title | Priority |
+|---|-------|----------|
+| #91 | Evaluate Python project structure for multi-agent scalability | Medium |
 | #89 | Appliance IP rotates via DHCP — static IP or Host Tailscale | Medium (ops) |
 | #88 | Decide where conversation history lives post-A2A | Architectural (deferred) |
-| #87 | Optimize for flexibility (startup wizard, auto-create tags) | Low/idea |
-| #86 | Fish shell module with local-optimized aliases + ttyd | Low/idea |
 | #85 | Enforce PR approval via branch protection rules | Medium (ops) |
 | #83 | Replace stdout-parsing install detection with conf-file check | Low |
-| #81 | Observability signal for install heuristic mismatch | **Done — PR #84** |
+| #67 | A2A modularization (Telegram ↔ agent) | High |
+| #57 | Consolidate validate_container_name into ContainerSpec | Low |
+| #53 | GitHub Deployment Action | Medium |
+| #27 | Streamline deployment | Medium |
+| #24 | Migrate agent packaging to pure Nix | Low |
+| #23 | CI/provision check for placeholder SSH key | Low |
+| #22 | Parameterize hardcoded values in host config | Low |
+| #17 | Tailscale on appliance host | Medium |
+
+**Features / enhancements:**
+
+| # | Title | Priority |
+|---|-------|----------|
+| #87 | Optimize for flexibility (startup wizard, auto-create tags) | Low/idea |
+| #86 | Fish shell module with local-optimized aliases + ttyd | Low/idea |
 | #80 | Browser-based terminal (ttyd) | Low/idea |
 | #79 | Typing indicator | Low/idea |
 | #78 | Fun idea | Low/idea |
 | #75 | Notifications / global agent formation | Low/idea |
-| #74 | Brittle ordered AsyncMock sequences in test_zfs.py | Low (partially addressed) |
-| #73 | Document install-detection heuristic fragility | Low |
 | #72 | Tiered Tailscale connectivity model | Medium |
 | #71 | Module self-description | Medium |
 | #70 | Voice message support | Medium |
 | #69 | opencode session-aware PR triage | Low/idea |
-| #68 | Surface ZFS pool name as config | **Done — merged PR #77** |
-| #67 | A2A modularization (Telegram ↔ agent) | High |
 | #66 | opencode Telegram wrapper | Low |
 | #65 | Git worktree support | Low |
 | #64 | BYOM (bring your own modules) | Low |
 | #63 | iOS/Android native app | Low/idea |
-| #62 | TTL-based multi-turn conversation | **Done — PR #84** |
 | #61 | Zero trust auth layer for Telegram | Medium |
-| #60 | Stale Tailscale node cleanup + --reset flag | **Done — merged PR #77** |
-| #59 | Use spec.model_copy() to avoid mutating ContainerSpec | Low |
-| #58 | Add Pydantic validator for zfs_user_quota format | Low |
-| #57 | Consolidate validate_container_name into ContainerSpec | Low |
 | #55 | iOS/Android widget display | Low/idea |
-| #54 | Agent container "query" (deep metadata) | **Done — PR #84** |
-| #53 | GitHub Deployment Action | Medium |
-| #51 | Automated LLM quality evals | **High (revised up)** |
-| #48 | Conversation history + session context | **Done — PR #84** |
-| #47 | Expose diagnostic tools to agent | **Done — PR #84** |
 | #34 | Configurable observability backend | Low |
 | #32 | Custom installer ISO | Low/idea |
-| #31 | Agent-driven evals | Low/idea |
+| #31 | Agent-driven evals (natural language, web frontend) | Low/idea |
 | #30 | Telegram as mobile coding IDE | Low/idea |
 | #29 | Opinionated coding agent workflow | Low/idea |
 | #28 | First-boot web wizard | Low/idea |
-| #27 | Streamline deployment | Medium |
 | #26 | Additional server | Low/idea |
 | #25 | Agent modularity / A2A (superseded by #67) | Low |
-| #24 | Migrate agent packaging to pure Nix | Low |
-| #23 | CI/provision check for placeholder SSH key | Low |
-| #22 | Parameterize hardcoded values in host config | Low |
 | #20 | Allow metadata pass-through | Low |
-| #17 | Tailscale on appliance host | Medium |
 | #15 | PowerShell convenience scripts | Low |
+
+**Minor / cleanup:**
+
+| # | Title | Priority |
+|---|-------|----------|
 | #11 | VM exclusion test coverage | Low |
 | #10 | Document VM exclusion behaviour | Low |
 | #9  | warnings.warn stacklevel | Minor |
 | #6  | Explicit @pytest.mark.asyncio markers | Low |
+
+**Closed this session:** #51 (automated LLM quality evals)
+**Previously closed:** #48, #47, #54, #62, #81, #68, #60, #46, #52, #12
 
 ---
 
