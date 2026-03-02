@@ -535,30 +535,34 @@ class TestConversationHistory:
 class TestBuildApplication:
     """build_application wires handlers into a telegram Application instance."""
 
+    def _build(self, token: str = "fake-token:TEST"):
+        """Build an application with get_settings mocked (no env vars needed)."""
+        from agent.chat.bot import build_application
+
+        with patch(
+            "agent.chat.bot.get_settings",
+            return_value=MagicMock(telegram_allowed_chat_ids=frozenset({111})),
+        ):
+            return build_application(token)
+
     def test_returns_application_instance(self):
         from telegram.ext import Application
 
-        from agent.chat.bot import build_application
-
-        app = build_application("fake-token:TEST")
+        app = self._build()
         assert isinstance(app, Application)
 
     def test_has_message_handler(self):
         """At minimum one MessageHandler must be registered for text messages."""
         from telegram.ext import MessageHandler
 
-        from agent.chat.bot import build_application
-
-        app = build_application("fake-token:TEST")
+        app = self._build()
         handler_types = [type(h) for h in app.handlers.get(0, [])]
         assert MessageHandler in handler_types
 
     def test_has_start_command_handler(self):
         from telegram.ext import CommandHandler
 
-        from agent.chat.bot import build_application
-
-        app = build_application("fake-token:TEST")
+        app = self._build()
         command_handlers = [h for h in app.handlers.get(0, []) if isinstance(h, CommandHandler)]
         start_handlers = [h for h in command_handlers if "start" in h.commands]
         assert len(start_handlers) == 1
@@ -742,3 +746,366 @@ class TestPerChatLocking:
         assert call_count == 2
         # Second call must have sent a real response, not an error message.
         ctx_b.bot.send_chat_action.assert_called()
+
+
+# ── Access control (check_access gate handler, #61) ──────────────────────────
+
+
+class TestCheckAccess:
+    """check_access is a gate handler registered in group -1.
+
+    It runs before all other handlers. If the chat_id is not in the
+    TELEGRAM_ALLOWED_CHAT_IDS allowlist, it raises ApplicationHandlerStop
+    to silently block the user.
+
+    Security model: fail-closed — empty/unset allowlist denies everyone.
+    """
+
+    async def test_authorized_user_passes_through(self):
+        """An authorized chat_id should NOT raise ApplicationHandlerStop."""
+        from agent.chat.handlers import check_access
+
+        update = _make_update(text="hello", chat_id=12345)
+        context = _make_context()
+
+        with patch(
+            "agent.chat.handlers.get_settings",
+            return_value=MagicMock(
+                is_chat_authorized=MagicMock(return_value=True),
+            ),
+        ):
+            # Should complete without raising — downstream handlers will fire.
+            await check_access(update, context)
+
+    async def test_unauthorized_user_is_blocked(self):
+        """An unauthorized chat_id should raise ApplicationHandlerStop."""
+        from telegram.ext import ApplicationHandlerStop
+
+        from agent.chat.handlers import check_access
+
+        update = _make_update(text="hello", chat_id=99999)
+        context = _make_context()
+
+        with patch(
+            "agent.chat.handlers.get_settings",
+            return_value=MagicMock(
+                is_chat_authorized=MagicMock(return_value=False),
+            ),
+        ):
+            import pytest
+
+            with pytest.raises(ApplicationHandlerStop):
+                await check_access(update, context)
+
+    async def test_empty_allowlist_denies_everyone(self):
+        """Fail-closed: when no allowlist is configured, ALL users are denied."""
+        from telegram.ext import ApplicationHandlerStop
+
+        from agent.chat.handlers import check_access
+
+        update = _make_update(text="hello", chat_id=12345)
+        context = _make_context()
+
+        # Simulate empty allowlist — is_chat_authorized always returns False.
+        with patch(
+            "agent.chat.handlers.get_settings",
+            return_value=MagicMock(
+                is_chat_authorized=MagicMock(return_value=False),
+            ),
+        ):
+            import pytest
+
+            with pytest.raises(ApplicationHandlerStop):
+                await check_access(update, context)
+
+    async def test_no_effective_chat_is_blocked(self):
+        """Updates with no effective_chat (e.g. channel posts) are blocked."""
+        from telegram.ext import ApplicationHandlerStop
+
+        from agent.chat.handlers import check_access
+
+        update = MagicMock()
+        update.effective_chat = None
+        context = _make_context()
+
+        import pytest
+
+        with pytest.raises(ApplicationHandlerStop):
+            await check_access(update, context)
+
+    async def test_does_not_reply_to_unauthorized_user(self):
+        """Silent drop — the bot should NOT reply to unauthorized users.
+
+        Acknowledging the bot exists to strangers is an information leak.
+        """
+        from telegram.ext import ApplicationHandlerStop
+
+        from agent.chat.handlers import check_access
+
+        update = _make_update(text="hello", chat_id=99999)
+        context = _make_context()
+
+        with patch(
+            "agent.chat.handlers.get_settings",
+            return_value=MagicMock(
+                is_chat_authorized=MagicMock(return_value=False),
+            ),
+        ):
+            import pytest
+
+            with pytest.raises(ApplicationHandlerStop):
+                await check_access(update, context)
+
+        # Verify no reply was sent.
+        update.effective_message.reply_text.assert_not_called()
+        context.bot.send_message.assert_not_called()
+
+    async def test_logs_denied_access_with_chat_id(self):
+        """Denied access attempts should be logged at WARNING with the chat_id."""
+        from telegram.ext import ApplicationHandlerStop
+
+        from agent.chat.handlers import check_access
+
+        update = _make_update(text="hello", chat_id=77777)
+        context = _make_context()
+
+        with (
+            patch(
+                "agent.chat.handlers.get_settings",
+                return_value=MagicMock(
+                    is_chat_authorized=MagicMock(return_value=False),
+                ),
+            ),
+            patch("agent.chat.handlers.logger") as mock_logger,
+        ):
+            import pytest
+
+            with pytest.raises(ApplicationHandlerStop):
+                await check_access(update, context)
+
+        mock_logger.warning.assert_called_once()
+        assert "77777" in str(mock_logger.warning.call_args)
+
+    async def test_negative_chat_id_for_group(self):
+        """Group chat IDs are negative — they should work in the allowlist."""
+        from agent.chat.handlers import check_access
+
+        update = _make_update(text="hello", chat_id=-100123456)
+        context = _make_context()
+
+        with patch(
+            "agent.chat.handlers.get_settings",
+            return_value=MagicMock(
+                is_chat_authorized=MagicMock(return_value=True),
+            ),
+        ):
+            # Should pass through without raising.
+            await check_access(update, context)
+
+
+class TestIsChatAuthorized:
+    """Unit tests for VoxnixSettings.is_chat_authorized().
+
+    Tests the config-level method directly, independent of the handler.
+    """
+
+    def test_authorized_id_returns_true(self):
+        from agent.config import VoxnixSettings
+
+        settings = VoxnixSettings(
+            voxnix_flake_path="/tmp/test",
+            llm_provider="ollama",
+            llm_model="test",
+            telegram_bot_token="fake:token",
+            telegram_allowed_chat_ids=frozenset({111, 222, 333}),
+        )
+        assert settings.is_chat_authorized(222) is True
+
+    def test_unauthorized_id_returns_false(self):
+        from agent.config import VoxnixSettings
+
+        settings = VoxnixSettings(
+            voxnix_flake_path="/tmp/test",
+            llm_provider="ollama",
+            llm_model="test",
+            telegram_bot_token="fake:token",
+            telegram_allowed_chat_ids=frozenset({111, 222}),
+        )
+        assert settings.is_chat_authorized(999) is False
+
+    def test_empty_allowlist_denies_all(self):
+        """Fail-closed: empty allowlist means nobody is authorized."""
+        from agent.config import VoxnixSettings
+
+        settings = VoxnixSettings(
+            voxnix_flake_path="/tmp/test",
+            llm_provider="ollama",
+            llm_model="test",
+            telegram_bot_token="fake:token",
+            telegram_allowed_chat_ids=frozenset(),
+        )
+        assert settings.is_chat_authorized(111) is False
+
+    def test_negative_group_chat_id(self):
+        """Negative chat IDs (Telegram groups) should work as allowlist entries."""
+        from agent.config import VoxnixSettings
+
+        settings = VoxnixSettings(
+            voxnix_flake_path="/tmp/test",
+            llm_provider="ollama",
+            llm_model="test",
+            telegram_bot_token="fake:token",
+            telegram_allowed_chat_ids=frozenset({-100123456}),
+        )
+        assert settings.is_chat_authorized(-100123456) is True
+        assert settings.is_chat_authorized(100123456) is False
+
+
+class TestParseAllowedChatIds:
+    """Unit tests for the TELEGRAM_ALLOWED_CHAT_IDS field_validator."""
+
+    def test_comma_separated_string(self):
+        from agent.config import VoxnixSettings
+
+        settings = VoxnixSettings(
+            voxnix_flake_path="/tmp/test",
+            llm_provider="ollama",
+            llm_model="test",
+            telegram_bot_token="fake:token",
+            telegram_allowed_chat_ids="111,222,333",
+        )
+        assert settings.telegram_allowed_chat_ids == frozenset({111, 222, 333})
+
+    def test_comma_separated_with_spaces(self):
+        from agent.config import VoxnixSettings
+
+        settings = VoxnixSettings(
+            voxnix_flake_path="/tmp/test",
+            llm_provider="ollama",
+            llm_model="test",
+            telegram_bot_token="fake:token",
+            telegram_allowed_chat_ids=" 111 , 222 , 333 ",
+        )
+        assert settings.telegram_allowed_chat_ids == frozenset({111, 222, 333})
+
+    def test_single_id(self):
+        from agent.config import VoxnixSettings
+
+        settings = VoxnixSettings(
+            voxnix_flake_path="/tmp/test",
+            llm_provider="ollama",
+            llm_model="test",
+            telegram_bot_token="fake:token",
+            telegram_allowed_chat_ids="12345678",
+        )
+        assert settings.telegram_allowed_chat_ids == frozenset({12345678})
+
+    def test_empty_string_gives_empty_set(self):
+        from agent.config import VoxnixSettings
+
+        settings = VoxnixSettings(
+            voxnix_flake_path="/tmp/test",
+            llm_provider="ollama",
+            llm_model="test",
+            telegram_bot_token="fake:token",
+            telegram_allowed_chat_ids="",
+        )
+        assert settings.telegram_allowed_chat_ids == frozenset()
+
+    def test_none_gives_empty_set(self):
+        from agent.config import VoxnixSettings
+
+        settings = VoxnixSettings(
+            voxnix_flake_path="/tmp/test",
+            llm_provider="ollama",
+            llm_model="test",
+            telegram_bot_token="fake:token",
+            telegram_allowed_chat_ids=None,
+        )
+        assert settings.telegram_allowed_chat_ids == frozenset()
+
+    def test_non_integer_raises_value_error(self):
+        import pytest
+
+        from agent.config import VoxnixSettings
+
+        with pytest.raises(Exception, match="non-integer"):
+            VoxnixSettings(
+                voxnix_flake_path="/tmp/test",
+                llm_provider="ollama",
+                llm_model="test",
+                telegram_bot_token="fake:token",
+                telegram_allowed_chat_ids="111,abc,333",
+            )
+
+    def test_negative_ids_for_groups(self):
+        from agent.config import VoxnixSettings
+
+        settings = VoxnixSettings(
+            voxnix_flake_path="/tmp/test",
+            llm_provider="ollama",
+            llm_model="test",
+            telegram_bot_token="fake:token",
+            telegram_allowed_chat_ids="-100123456,111",
+        )
+        assert settings.telegram_allowed_chat_ids == frozenset({-100123456, 111})
+
+    def test_trailing_comma_ignored(self):
+        from agent.config import VoxnixSettings
+
+        settings = VoxnixSettings(
+            voxnix_flake_path="/tmp/test",
+            llm_provider="ollama",
+            llm_model="test",
+            telegram_bot_token="fake:token",
+            telegram_allowed_chat_ids="111,222,",
+        )
+        assert settings.telegram_allowed_chat_ids == frozenset({111, 222})
+
+    def test_frozenset_passthrough(self):
+        from agent.config import VoxnixSettings
+
+        settings = VoxnixSettings(
+            voxnix_flake_path="/tmp/test",
+            llm_provider="ollama",
+            llm_model="test",
+            telegram_bot_token="fake:token",
+            telegram_allowed_chat_ids=frozenset({111, 222}),
+        )
+        assert settings.telegram_allowed_chat_ids == frozenset({111, 222})
+
+
+class TestBuildApplicationAccessControl:
+    """build_application must register the access control gate handler."""
+
+    def test_gate_handler_registered_in_group_negative_one(self):
+        """check_access must be in handler group -1 (before group 0)."""
+        from telegram.ext import TypeHandler
+
+        from agent.chat.bot import build_application
+
+        with patch("agent.chat.bot.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(
+                telegram_allowed_chat_ids=frozenset({111}),
+            )
+            app = build_application("fake-token:TEST")
+
+        # Group -1 should exist and contain a TypeHandler.
+        assert -1 in app.handlers
+        gate_handlers = app.handlers[-1]
+        assert len(gate_handlers) >= 1
+        assert any(isinstance(h, TypeHandler) for h in gate_handlers)
+
+    def test_gate_handler_runs_before_group_zero(self):
+        """Group -1 is processed before group 0 by PTB's handler resolution."""
+        from agent.chat.bot import build_application
+
+        with patch("agent.chat.bot.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(
+                telegram_allowed_chat_ids=frozenset({111}),
+            )
+            app = build_application("fake-token:TEST")
+
+        groups = sorted(app.handlers.keys())
+        assert groups[0] == -1, "Gate handler group must come before group 0"
+        assert 0 in app.handlers, "Group 0 (commands + agent dispatch) must exist"

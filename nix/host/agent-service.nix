@@ -154,7 +154,12 @@ in
 
       # agenix-decrypted environment file with all agent secrets:
       # TELEGRAM_BOT_TOKEN, LLM_PROVIDER, LLM_MODEL, <PROVIDER>_API_KEY,
+      # TELEGRAM_ALLOWED_CHAT_IDS (comma-separated authorized chat IDs),
       # and optionally LOGFIRE_TOKEN.
+      #
+      # TELEGRAM_ALLOWED_CHAT_IDS is fail-closed: if empty or missing, the
+      # bot denies ALL users. Add at least the admin's chat_id to unlock.
+      # Find your chat_id by messaging @userinfobot on Telegram.
       EnvironmentFile = config.age.secrets.agent-env.path;
 
       # ── Working directory & state ────────────────────────────────────────

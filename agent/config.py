@@ -30,6 +30,11 @@ Environment variables (all injected by agenix at runtime):
                             environment based on the resolved provider.
 
   Optional:
+    TELEGRAM_ALLOWED_CHAT_IDS — Comma-separated list of Telegram chat IDs authorized
+                            to use the bot (e.g. "12345678,87654321"). When set, only
+                            these users can interact with the bot — all others are
+                            silently ignored. When unset or empty, the bot is LOCKED
+                            (denies everyone) — fail-closed by design.
     LOGFIRE_TOKEN         — Logfire project token for observability.
                             If unset, logfire runs in local/dev mode (no remote export).
     ZFS_POOL              — ZFS pool name. Must match nix/host/storage.nix.
@@ -46,6 +51,11 @@ from functools import lru_cache
 
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Sentinel for "no allowlist configured" — distinct from an empty set (which
+# means "deny everyone explicitly").  We use frozenset() as the default and
+# treat it as fail-closed: if you don't configure an allowlist, nobody gets in.
+_EMPTY_CHAT_IDS: frozenset[int] = frozenset()
 
 # Mapping from provider name → expected API key environment variable.
 # Used to validate that the correct key is present at startup rather than
@@ -106,6 +116,63 @@ class VoxnixSettings(BaseSettings):
 
     telegram_bot_token: SecretStr
     """Telegram Bot API token. SecretStr prevents accidental logging."""
+
+    telegram_allowed_chat_ids: frozenset[int] = _EMPTY_CHAT_IDS
+    """Set of Telegram chat IDs authorized to interact with the bot.
+
+    Parsed from a comma-separated env var: TELEGRAM_ALLOWED_CHAT_IDS=12345678,87654321
+
+    Security model (fail-closed):
+      - When set: only listed chat IDs can use the bot.
+      - When empty or unset: ALL users are denied. The bot is locked by default.
+        This prevents accidental exposure if the env var is forgotten during deploy.
+
+    Add your own chat_id to the agenix secrets file (agent-env.age) to unlock.
+    Find your chat_id by messaging @userinfobot on Telegram.
+
+    See docs/architecture.md § Trust Model and issue #61.
+    """
+
+    @field_validator("telegram_allowed_chat_ids", mode="before")
+    @classmethod
+    def parse_allowed_chat_ids(cls, v: object) -> frozenset[int]:
+        """Parse comma-separated chat IDs from the environment variable.
+
+        Accepts:
+          - A string like "12345678,87654321" (from env var)
+          - An already-parsed frozenset/set/list of ints (from code)
+          - Empty string / None → empty frozenset (fail-closed)
+
+        Raises ValueError on non-integer tokens so typos surface at startup.
+        """
+        if v is None or v == "":
+            return _EMPTY_CHAT_IDS
+        if isinstance(v, (frozenset, set)):
+            return frozenset(v)
+        if isinstance(v, (list, tuple)):
+            return frozenset(v)
+        if isinstance(v, str):
+            raw_ids = [token.strip() for token in v.split(",") if token.strip()]
+            if not raw_ids:
+                return _EMPTY_CHAT_IDS
+            try:
+                return frozenset(int(id_str) for id_str in raw_ids)
+            except ValueError as e:
+                msg = (
+                    f"TELEGRAM_ALLOWED_CHAT_IDS contains non-integer value: {e}. "
+                    "Expected comma-separated integers (e.g. '12345678,87654321')."
+                )
+                raise ValueError(msg) from e
+        msg = f"Unexpected type for TELEGRAM_ALLOWED_CHAT_IDS: {type(v)}"
+        raise TypeError(msg)
+
+    def is_chat_authorized(self, chat_id: int) -> bool:
+        """Check whether a Telegram chat ID is authorized to use the bot.
+
+        Returns True only if the chat_id is in the allowlist.
+        Returns False when the allowlist is empty (fail-closed).
+        """
+        return chat_id in self.telegram_allowed_chat_ids
 
     # ── Tailscale ────────────────────────────────────────────────────────────
 
