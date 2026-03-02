@@ -43,6 +43,7 @@ from agent.evals.scenarios import (
     NO_HALLUCINATED_MODULES,
     NO_MARKDOWN,
     NO_RAW_ERRORS,
+    Metric,
     Scenario,
 )
 
@@ -58,7 +59,7 @@ _DISPLAY_CFG = DisplayConfig(print_results=False, show_indicator=False)
 
 _tool_correctness = ToolCorrectnessMetric(threshold=0.7)
 
-_METRICS: dict[str, GEval] = {
+_METRICS: dict[Metric, GEval] = {
     NO_RAW_ERRORS: GEval(
         name=NO_RAW_ERRORS,
         criteria=(

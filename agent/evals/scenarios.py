@@ -28,6 +28,7 @@ See docs/handoff.md § Agent evals (#51) for the scenario design rationale.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Literal
 
 # ── Quality check definitions ──────────────────────────────────────────────────
@@ -37,14 +38,30 @@ from typing import Literal
 #   should   — logs a warning but does not fail CI
 Tier = Literal["must", "should"]
 
-# Metric names — these map 1:1 to GEval instances in the test runner.
-# Defined here as constants so scenarios and tests reference the same strings.
-NO_RAW_ERRORS = "NoRawErrors"
-NO_MARKDOWN = "NoMarkdown"
-CONCISENESS = "Conciseness"
-CONTAINER_NAME = "ContainerNamePresent"
-EMOJI_INDICATORS = "EmojiIndicators"
-NO_HALLUCINATED_MODULES = "NoHallucinatedModules"
+
+class Metric(StrEnum):
+    """Metric names — map 1:1 to GEval instances in the test runner.
+
+    StrEnum so values work as dict keys, GEval ``name=`` params, and
+    f-string interpolation with zero conversion.
+    """
+
+    NO_RAW_ERRORS = "NoRawErrors"
+    NO_MARKDOWN = "NoMarkdown"
+    CONCISENESS = "Conciseness"
+    CONTAINER_NAME = "ContainerNamePresent"
+    EMOJI_INDICATORS = "EmojiIndicators"
+    NO_HALLUCINATED_MODULES = "NoHallucinatedModules"
+
+
+# Re-export members at module level for backward compatibility.
+# Existing imports like ``from scenarios import NO_RAW_ERRORS`` keep working.
+NO_RAW_ERRORS = Metric.NO_RAW_ERRORS
+NO_MARKDOWN = Metric.NO_MARKDOWN
+CONCISENESS = Metric.CONCISENESS
+CONTAINER_NAME = Metric.CONTAINER_NAME
+EMOJI_INDICATORS = Metric.EMOJI_INDICATORS
+NO_HALLUCINATED_MODULES = Metric.NO_HALLUCINATED_MODULES
 
 
 @dataclass(frozen=True)
@@ -56,7 +73,7 @@ class QualityCheck:
     to decide assert vs warn.
     """
 
-    metric: str
+    metric: Metric
     tier: Tier = "must"
 
 
