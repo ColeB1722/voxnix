@@ -25,6 +25,7 @@ on:
       - "agent/**"
       - "pyproject.toml"
       - "uv.lock"
+      - ".github/workflows/eval.yml"
 
   # Allow manual runs for debugging or re-baselining.
   workflow_dispatch:
@@ -74,7 +75,9 @@ jobs:
         id: run-evals
         if: steps.check-key.outputs.skip != 'true'
         run: |
+          set -o pipefail
           nix develop --command bash -c "
+            set -o pipefail
             uv sync --all-extras
             uv run pytest -m evals -o 'addopts=' agent/evals/ --tb=short -v 2>&1 | tee eval-output.txt
           "
