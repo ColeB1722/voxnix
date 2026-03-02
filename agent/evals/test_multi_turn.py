@@ -162,7 +162,7 @@ async def test_multi_turn(
                 f"Multi-turn '{scenario.id}' turn {tr['turn']}: "
                 f"expected {tr['expected_tools']}, got {tr['actual_tools']}. "
                 f"({tr['description']})",
-                stacklevel=1,
+                stacklevel=2,
             )
 
     if all_tools_acceptable:

@@ -27,7 +27,7 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
     if name == "build_application":
         from agent.chat.bot import build_application
 

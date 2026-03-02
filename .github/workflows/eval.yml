@@ -37,17 +37,29 @@ jobs:
   eval:
     name: LLM quality evals
     runs-on: ubuntu-latest
-    # Don't run if the secret isn't configured yet.
-    if: ${{ secrets.OPENROUTER_API_KEY != '' }}
 
     steps:
+      - name: Check for API key
+        id: check-key
+        run: |
+          if [ -z "${OPENROUTER_API_KEY}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::OPENROUTER_API_KEY not configured — skipping evals"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.check-key.outputs.skip != 'true'
 
       - uses: DeterminateSystems/nix-installer-action@main
+        if: steps.check-key.outputs.skip != 'true'
       - uses: DeterminateSystems/magic-nix-cache-action@main
+        if: steps.check-key.outputs.skip != 'true'
 
       - name: Run evals
         id: run-evals
+        if: steps.check-key.outputs.skip != 'true'
         run: |
           nix develop --command bash -c "
             uv sync --all-extras
@@ -57,7 +69,7 @@ jobs:
         continue-on-error: true
 
       - name: Build eval report
-        if: steps.run-evals.outcome == 'failure'
+        if: steps.check-key.outputs.skip != 'true' && steps.run-evals.outcome == 'failure'
         id: report
         run: |
           # Extract the failure summary from pytest output.
@@ -92,6 +104,7 @@ jobs:
           } > eval-report.md
 
       - name: Find existing eval-regression issue
+        if: steps.check-key.outputs.skip != 'true'
         id: find-issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -106,7 +119,7 @@ jobs:
 
       # ── On failure: open or update the eval-regression issue ──────────
       - name: Create eval-regression issue
-        if: steps.run-evals.outcome == 'failure' && steps.find-issue.outputs.issue_number == ''
+        if: steps.check-key.outputs.skip != 'true' && steps.run-evals.outcome == 'failure' && steps.find-issue.outputs.issue_number == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -121,7 +134,7 @@ jobs:
             --label "eval-regression"
 
       - name: Update existing eval-regression issue
-        if: steps.run-evals.outcome == 'failure' && steps.find-issue.outputs.issue_number != ''
+        if: steps.check-key.outputs.skip != 'true' && steps.run-evals.outcome == 'failure' && steps.find-issue.outputs.issue_number != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ steps.find-issue.outputs.issue_number }}
@@ -130,7 +143,7 @@ jobs:
 
       # ── On success: auto-close any open eval-regression issue ─────────
       - name: Close eval-regression issue (evals passing)
-        if: steps.run-evals.outcome == 'success' && steps.find-issue.outputs.issue_number != ''
+        if: steps.check-key.outputs.skip != 'true' && steps.run-evals.outcome == 'success' && steps.find-issue.outputs.issue_number != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ steps.find-issue.outputs.issue_number }}
@@ -144,7 +157,7 @@ jobs:
       # ── Final status ──────────────────────────────────────────────────
       # Surface the eval result as the job status without blocking anything.
       - name: Report eval status
-        if: always()
+        if: always() && steps.check-key.outputs.skip != 'true'
         run: |
           if [ "${{ steps.run-evals.outcome }}" = "success" ]; then
             echo "✅ All evals passed"
