@@ -19,21 +19,17 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from deepeval.test_case import LLMTestCase, ToolCall
-from pydantic_ai.messages import (  # pyright: ignore[reportMissingModuleSource]
-    ModelResponse,
-    ToolCallPart,
-)
+from pydantic_ai.messages import ModelResponse  # pyright: ignore[reportMissingModuleSource]
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
 
 
 def extract_tool_calls(messages: list[ModelMessage]) -> list[ToolCall]:
-    """Extract tool calls from PydanticAI messages into deepeval ToolCall format.
+    """Convert PydanticAI tool calls into deepeval ``ToolCall`` objects.
 
-    Iterates through all ``ModelResponse`` messages and finds ``ToolCallPart``
-    entries. Each is converted to a deepeval ``ToolCall`` with the tool name
-    and arguments (if present).
+    Uses ``ModelResponse.tool_calls`` (which already filters to
+    ``ToolCallPart`` instances) rather than manually walking message parts.
 
     Args:
         messages: List of ``ModelMessage`` objects from
@@ -43,25 +39,19 @@ def extract_tool_calls(messages: list[ModelMessage]) -> list[ToolCall]:
         List of deepeval ``ToolCall`` objects, in the order they were called.
         Empty list if no tool calls were made.
     """
-    calls: list[ToolCall] = []
-    for msg in messages:
-        if isinstance(msg, ModelResponse):
-            for part in msg.parts:
-                if isinstance(part, ToolCallPart):
-                    calls.append(
-                        ToolCall(
-                            name=part.tool_name,
-                            input_parameters=part.args_as_dict() if part.args is not None else None,
-                        )
-                    )
-    return calls
+    return [
+        ToolCall(
+            name=part.tool_name,
+            input_parameters=part.args_as_dict() if part.args is not None else None,
+        )
+        for msg in messages
+        if isinstance(msg, ModelResponse)
+        for part in msg.tool_calls
+    ]
 
 
 def extract_tool_names(messages: list[ModelMessage]) -> list[str]:
     """Extract just the tool names from PydanticAI messages.
-
-    Convenience wrapper over ``extract_tool_calls`` for assertions that
-    only care about which tools were called, not their arguments.
 
     Args:
         messages: List of ``ModelMessage`` objects.
@@ -70,28 +60,12 @@ def extract_tool_names(messages: list[ModelMessage]) -> list[str]:
         List of tool name strings, in call order. May contain duplicates
         if the same tool was called multiple times.
     """
-    return [call.name for call in extract_tool_calls(messages)]
-
-
-def extract_final_output(messages: list[ModelMessage]) -> str:
-    """Extract the agent's final text output from PydanticAI messages.
-
-    Walks the messages in reverse to find the last ``ModelResponse`` that
-    contains a text part (not a tool call). This is the agent's final
-    user-facing response.
-
-    Args:
-        messages: List of ``ModelMessage`` objects.
-
-    Returns:
-        The final text response string, or empty string if none found.
-    """
-    for msg in reversed(messages):
-        if isinstance(msg, ModelResponse):
-            text = msg.text
-            if text:
-                return text
-    return ""
+    return [
+        part.tool_name
+        for msg in messages
+        if isinstance(msg, ModelResponse)
+        for part in msg.tool_calls
+    ]
 
 
 def build_test_case(
