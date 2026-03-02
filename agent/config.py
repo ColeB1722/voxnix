@@ -54,11 +54,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 _PROVIDER_API_KEY_ENV: dict[str, str | None] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
-    "google": "GOOGLE_API_KEY",
+    "google-gla": "GOOGLE_API_KEY",  # Google AI Studio
+    "google-vertex": None,  # Uses Application Default Credentials (ADC)
     "mistral": "MISTRAL_API_KEY",
     "groq": "GROQ_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
-    "ollama": None,
+    "xai": "XAI_API_KEY",  # Grok
+    "cohere": "CO_API_KEY",
+    "cerebras": "CEREBRAS_API_KEY",
+    "bedrock": None,  # Uses AWS credentials chain
+    "ollama": None,  # Local, no key
 }
 
 

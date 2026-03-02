@@ -1,0 +1,154 @@
+# Post-merge LLM eval workflow.
+#
+# Runs the deepeval eval suite after PRs merge to main. Results are surfaced
+# via a single "eval-regression" GitHub issue — at most one open at a time:
+#   - All pass → auto-close any open eval-regression issue
+#   - Any fail → open or update the eval-regression issue with a failure report
+#
+# This runs async after merge so it never blocks PRs. The eval-regression
+# issue provides visibility without flooding the backlog (one issue, not N).
+#
+# Requires the OPENROUTER_API_KEY repository secret.
+
+name: Evals
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "agent/**"
+      - "pyproject.toml"
+      - "uv.lock"
+
+  # Allow manual runs for debugging or re-baselining.
+  workflow_dispatch:
+
+# Only one eval run at a time — newer pushes cancel in-progress runs.
+concurrency:
+  group: evals-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LLM_PROVIDER: openrouter
+  LLM_MODEL: anthropic/claude-haiku-4.5
+  OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+jobs:
+  eval:
+    name: LLM quality evals
+    runs-on: ubuntu-latest
+    # Don't run if the secret isn't configured yet.
+    if: ${{ secrets.OPENROUTER_API_KEY != '' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Run evals
+        id: run-evals
+        run: |
+          nix develop --command bash -c "
+            uv sync --all-extras
+            uv run pytest -m evals -o 'addopts=' agent/evals/ --tb=short -v 2>&1 | tee eval-output.txt
+          "
+        # Don't fail the step — we handle pass/fail ourselves below.
+        continue-on-error: true
+
+      - name: Build eval report
+        if: steps.run-evals.outcome == 'failure'
+        id: report
+        run: |
+          # Extract the failure summary from pytest output.
+          COMMIT_SHA="${{ github.sha }}"
+          SHORT_SHA="${COMMIT_SHA:0:7}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          {
+            echo "## Eval regression on \`${SHORT_SHA}\`"
+            echo ""
+            echo "**Commit:** [\`${SHORT_SHA}\`](${{ github.server_url }}/${{ github.repository }}/commit/${COMMIT_SHA})"
+            echo "**Workflow run:** [${RUN_URL}](${RUN_URL})"
+            echo "**Triggered by:** ${{ github.event.head_commit.message || 'manual dispatch' }}"
+            echo ""
+            echo "### Failures"
+            echo ""
+            echo '```'
+            # Pull FAILED lines and the short summary from pytest output.
+            grep -E "^(FAILED|PASSED|ERROR|WARNING)" eval-output.txt || true
+            echo '```'
+            echo ""
+            echo "### Full output"
+            echo ""
+            echo '<details><summary>Click to expand</summary>'
+            echo ""
+            echo '```'
+            # Truncate to avoid hitting the 65536 char issue body limit.
+            tail -200 eval-output.txt
+            echo '```'
+            echo ""
+            echo '</details>'
+          } > eval-report.md
+
+      - name: Find existing eval-regression issue
+        id: find-issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_NUMBER=$(gh issue list \
+            --label "eval-regression" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty' \
+          )
+          echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      # ── On failure: open or update the eval-regression issue ──────────
+      - name: Create eval-regression issue
+        if: steps.run-evals.outcome == 'failure' && steps.find-issue.outputs.issue_number == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create eval-regression \
+            --description "Automated: LLM eval suite detected a regression" \
+            --color "D93F0B" \
+            --force
+
+          gh issue create \
+            --title "eval: regression detected on $(echo ${{ github.sha }} | cut -c1-7)" \
+            --body-file eval-report.md \
+            --label "eval-regression"
+
+      - name: Update existing eval-regression issue
+        if: steps.run-evals.outcome == 'failure' && steps.find-issue.outputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.find-issue.outputs.issue_number }}
+        run: |
+          gh issue comment "${ISSUE_NUMBER}" --body-file eval-report.md
+
+      # ── On success: auto-close any open eval-regression issue ─────────
+      - name: Close eval-regression issue (evals passing)
+        if: steps.run-evals.outcome == 'success' && steps.find-issue.outputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.find-issue.outputs.issue_number }}
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          gh issue close "${ISSUE_NUMBER}" \
+            --comment "All evals passing as of [\`${SHORT_SHA}\`](${RUN_URL}). Closing automatically."
+
+      # ── Final status ──────────────────────────────────────────────────
+      # Surface the eval result as the job status without blocking anything.
+      - name: Report eval status
+        if: always()
+        run: |
+          if [ "${{ steps.run-evals.outcome }}" = "success" ]; then
+            echo "✅ All evals passed"
+          else
+            echo "❌ Eval failures detected — see eval-regression issue"
+            exit 1
+          fi

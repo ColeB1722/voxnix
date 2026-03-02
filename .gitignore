@@ -29,3 +29,11 @@ Thumbs.db
 *.age
 !secrets/*.age
 !*.age.example
+
+# Eval credentials — API keys for LLM evals (not prod secrets, just dev keys).
+# .env.eval.example is committed as a template; .env.eval has real keys.
+.env.eval
+.env.local
+
+# deepeval artifacts
+.deepeval/
