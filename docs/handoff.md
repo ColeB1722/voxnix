@@ -256,24 +256,27 @@ The first real CI eval run (with pipefail fix) will surface the same 4 failures 
 - `status-is-running` — agent called `tool_list_workloads` instead of `tool_get_container_status`. Fix: tool docstring disambiguation or system prompt guidance.
 - **#97** — Add MUST NOT scenarios for welcome-prompt and confirmation-prompt regressions (coverage gap from #51 spec).
 
-### 2. Eval coverage expansion — High
+### 2. Telegram access control (#61) — High (security)
+Anyone who discovers the bot can currently create containers on the appliance. Add an allowlist of authorized Telegram chat IDs (env var or agenix secret). This is the single biggest security gap — ownership scoping is already wired through, but there's no gate on who can talk to the bot in the first place.
+
+### 3. Eval coverage expansion — High
 - **#94** — Multi-turn knowledge retention scores 0.00. Investigate whether message history threading in evals matches Telegram bot behavior, and whether KnowledgeRetentionMetric thresholds need tuning.
 - **#97** — Add `NoWelcomePrompt` and `NoConfirmationPrompt` GEval metrics + scenarios.
 
-### 3. Host Tailscale (#17) — Medium
+### 4. Host Tailscale (#17) — Medium
 Add `services.tailscale.enable = true` to host NixOS config. Enables out-of-LAN `just deploy` and SSH break-glass. Small, orthogonal to everything. Also mitigates #89 (DHCP IP rotation) by providing a stable Tailscale IP.
 
-### 4. GitHub Deployment Action (#53) — Medium
+### 5. GitHub Deployment Action (#53) — Medium
 Deploy on merge to main via GitHub Actions. Combined with #17, removes LAN dependency.
 
-### 5. Quick cleanup batch — Low effort
+### 6. Quick cleanup batch — Low effort
 - #57 — Consolidate `validate_container_name` into `ContainerSpec`
 - #83 — Replace stdout-parsing install detection with conf-file check
 - #22 — Parameterize hardcoded values in host config
 - #89 — Fix appliance DHCP IP rotation (static IP or rely on #17)
 - #95 — Pin DeterminateSystems CI actions to specific versions
 
-### 6. A2A modularization (#67) — Architectural, 2-3 sessions
+### 7. A2A modularization (#67) — Architectural, 2-3 sessions
 Decouple Telegram bot from the agent via fasta2a. Evals are now in place as a safety net. The conversation history decision (#88) becomes relevant here.
 
 ---
@@ -295,6 +298,7 @@ Decouple Telegram bot from the agent via fasta2a. Evals are now in place as a sa
 | # | Title | Priority |
 |---|-------|----------|
 | #91 | Evaluate Python project structure for multi-agent scalability | Medium |
+| #61 | Telegram access control — allowlist authorized chat IDs | **High (security)** |
 | #89 | Appliance IP rotates via DHCP — static IP or Host Tailscale | Medium (ops) |
 | #88 | Decide where conversation history lives post-A2A | Architectural (deferred) |
 | #85 | Enforce PR approval via branch protection rules | Medium (ops) |

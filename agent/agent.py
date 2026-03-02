@@ -23,15 +23,11 @@ Architecture decisions reflected here:
 See docs/architecture.md § Agent Tool Architecture and § Trust Model.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 import logfire
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.messages import (
-    ModelMessage,  # noqa: TC002  # pyright: ignore[reportMissingModuleSource] — runtime import: PydanticAI evaluates type hints on history_processors
-)
+from pydantic_ai.messages import ModelMessage  # pyright: ignore[reportMissingModuleSource]
 
 from agent.chat.history import DEFAULT_MAX_TURN_MESSAGES
 from agent.config import VoxnixSettings, get_settings
