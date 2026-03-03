@@ -42,6 +42,7 @@ in
   # Contains all runtime secrets as KEY=VALUE lines:
   #
   #   TELEGRAM_BOT_TOKEN=...
+  #   TELEGRAM_ALLOWED_CHAT_IDS=[12345678,87654321]  (JSON array, fail-closed: omit = deny all)
   #   LLM_PROVIDER=anthropic
   #   LLM_MODEL=claude-sonnet-4-20250514
   #   ANTHROPIC_API_KEY=sk-ant-...

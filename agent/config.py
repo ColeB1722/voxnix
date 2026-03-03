@@ -30,6 +30,12 @@ Environment variables (all injected by agenix at runtime):
                             environment based on the resolved provider.
 
   Optional:
+    TELEGRAM_ALLOWED_CHAT_IDS — JSON array of Telegram chat IDs authorized
+                            to use the bot (e.g. '[12345678,87654321]').
+                            pydantic-settings natively parses this into frozenset[int].
+                            When set, only these users can interact with the bot —
+                            all others are silently ignored. When unset or empty,
+                            the bot is LOCKED (denies everyone) — fail-closed by design.
     LOGFIRE_TOKEN         — Logfire project token for observability.
                             If unset, logfire runs in local/dev mode (no remote export).
     ZFS_POOL              — ZFS pool name. Must match nix/host/storage.nix.
@@ -46,6 +52,10 @@ from functools import lru_cache
 
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Default empty allowlist. Fail-closed: if you don't configure an allowlist,
+# nobody gets in (both unset and explicitly empty deny everyone).
+_EMPTY_CHAT_IDS: frozenset[int] = frozenset()
 
 # Mapping from provider name → expected API key environment variable.
 # Used to validate that the correct key is present at startup rather than
@@ -106,6 +116,31 @@ class VoxnixSettings(BaseSettings):
 
     telegram_bot_token: SecretStr
     """Telegram Bot API token. SecretStr prevents accidental logging."""
+
+    telegram_allowed_chat_ids: frozenset[int] = _EMPTY_CHAT_IDS
+    """Set of Telegram chat IDs authorized to interact with the bot.
+
+    Parsed from a JSON array env var: TELEGRAM_ALLOWED_CHAT_IDS=[12345678,87654321]
+    pydantic-settings natively decodes JSON into frozenset[int] — no custom validator needed.
+
+    Security model (fail-closed):
+      - When set: only listed chat IDs can use the bot.
+      - When empty or unset: ALL users are denied. The bot is locked by default.
+        This prevents accidental exposure if the env var is forgotten during deploy.
+
+    Add your own chat_id to the agenix secrets file (agent-env.age) to unlock.
+    Find your chat_id by messaging @userinfobot on Telegram.
+
+    See docs/architecture.md § Trust Model and issue #61.
+    """
+
+    def is_chat_authorized(self, chat_id: int) -> bool:
+        """Check whether a Telegram chat ID is authorized to use the bot.
+
+        Returns True only if the chat_id is in the allowlist.
+        Returns False when the allowlist is empty (fail-closed).
+        """
+        return chat_id in self.telegram_allowed_chat_ids
 
     # ── Tailscale ────────────────────────────────────────────────────────────
 

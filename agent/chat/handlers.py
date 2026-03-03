@@ -1,6 +1,7 @@
 """Telegram message handlers for the voxnix agent chat layer.
 
 Responsibilities:
+  - Enforce access control via chat_id allowlist (gate handler, #61)
   - Extract the Telegram chat_id as the owner identity (trust model anchor)
   - Dispatch text messages to the PydanticAI agent
   - Maintain per-chat conversation history via ConversationStore
@@ -8,6 +9,8 @@ Responsibilities:
   - Handle errors gracefully — users never see raw tracebacks
 
 Architecture decisions reflected here:
+  - Access control is fail-closed: if TELEGRAM_ALLOWED_CHAT_IDS is empty or unset,
+    ALL users are denied. The bot is locked by default. See #61.
   - chat_id IS the user identity — no separate auth system (see docs/architecture.md § Trust Model)
   - agent.run() is called with owner=str(chat_id), which flows into VoxnixDeps
   - Conversation history is stored in-memory per chat_id with TTL expiry and turn limits.
@@ -29,6 +32,7 @@ from telegram.constants import ChatAction
 
 from agent.agent import run as agent_run  # re-exported for easy mocking in tests
 from agent.chat.history import ConversationStore
+from agent.config import get_settings
 
 if TYPE_CHECKING:
     from telegram import Update
@@ -165,6 +169,44 @@ def format_response(text: str) -> list[str]:
         chunks.append(remaining)
 
     return chunks
+
+
+# ── Access control ────────────────────────────────────────────────────────────
+
+
+async def check_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Gate handler — block unauthorized chat IDs before any other handler runs.
+
+    Registered in handler group -1 (runs before group 0 where /start, /help,
+    and the agent dispatch live). If the chat_id is not in the allowlist,
+    raises ApplicationHandlerStop to prevent all downstream processing.
+
+    Security model (fail-closed):
+      - Allowlist empty or unset → deny everyone. The bot is locked by default.
+      - Allowlist configured → only listed chat_ids proceed.
+
+    Unauthorized attempts are logged at WARNING level with the chat_id so the
+    admin can see who is trying to reach the bot (and add them if desired).
+
+    This handler does NOT reply to unauthorized users — silent drop is safer
+    than acknowledging the bot exists to strangers.
+
+    See docs/architecture.md § Trust Model and issue #61.
+    """
+    from telegram.ext import ApplicationHandlerStop
+
+    if update.effective_chat is None:
+        raise ApplicationHandlerStop
+
+    chat_id = update.effective_chat.id
+    settings = get_settings()
+
+    if not settings.is_chat_authorized(chat_id):
+        logger.warning(
+            "Access denied for chat_id=%d (not in TELEGRAM_ALLOWED_CHAT_IDS)",
+            chat_id,
+        )
+        raise ApplicationHandlerStop
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
