@@ -153,7 +153,7 @@ in
 
       # agenix-decrypted environment file with all agent secrets:
       # TELEGRAM_BOT_TOKEN, LLM_PROVIDER, LLM_MODEL, <PROVIDER>_API_KEY,
-      # TELEGRAM_ALLOWED_CHAT_IDS (comma-separated authorized chat IDs),
+      # TELEGRAM_ALLOWED_CHAT_IDS (JSON array of authorized chat IDs),
       # and optionally LOGFIRE_TOKEN.
       #
       # TELEGRAM_ALLOWED_CHAT_IDS is fail-closed: if empty or missing, the

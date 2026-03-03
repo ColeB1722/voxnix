@@ -30,11 +30,12 @@ Environment variables (all injected by agenix at runtime):
                             environment based on the resolved provider.
 
   Optional:
-    TELEGRAM_ALLOWED_CHAT_IDS — Comma-separated list of Telegram chat IDs authorized
-                            to use the bot (e.g. "12345678,87654321"). When set, only
-                            these users can interact with the bot — all others are
-                            silently ignored. When unset or empty, the bot is LOCKED
-                            (denies everyone) — fail-closed by design.
+    TELEGRAM_ALLOWED_CHAT_IDS — JSON array of Telegram chat IDs authorized
+                            to use the bot (e.g. '[12345678,87654321]').
+                            pydantic-settings natively parses this into frozenset[int].
+                            When set, only these users can interact with the bot —
+                            all others are silently ignored. When unset or empty,
+                            the bot is LOCKED (denies everyone) — fail-closed by design.
     LOGFIRE_TOKEN         — Logfire project token for observability.
                             If unset, logfire runs in local/dev mode (no remote export).
     ZFS_POOL              — ZFS pool name. Must match nix/host/storage.nix.
@@ -119,7 +120,8 @@ class VoxnixSettings(BaseSettings):
     telegram_allowed_chat_ids: frozenset[int] = _EMPTY_CHAT_IDS
     """Set of Telegram chat IDs authorized to interact with the bot.
 
-    Parsed from a comma-separated env var: TELEGRAM_ALLOWED_CHAT_IDS=12345678,87654321
+    Parsed from a JSON array env var: TELEGRAM_ALLOWED_CHAT_IDS=[12345678,87654321]
+    pydantic-settings natively decodes JSON into frozenset[int] — no custom validator needed.
 
     Security model (fail-closed):
       - When set: only listed chat IDs can use the bot.
@@ -131,39 +133,6 @@ class VoxnixSettings(BaseSettings):
 
     See docs/architecture.md § Trust Model and issue #61.
     """
-
-    @field_validator("telegram_allowed_chat_ids", mode="before")
-    @classmethod
-    def parse_allowed_chat_ids(cls, v: object) -> frozenset[int]:
-        """Parse comma-separated chat IDs from the environment variable.
-
-        Accepts:
-          - A string like "12345678,87654321" (from env var)
-          - An already-parsed frozenset/set/list of ints (from code)
-          - Empty string / None → empty frozenset (fail-closed)
-
-        Raises ValueError on non-integer tokens so typos surface at startup.
-        """
-        if v is None or v == "":
-            return _EMPTY_CHAT_IDS
-        if isinstance(v, (frozenset, set)):
-            return frozenset(v)
-        if isinstance(v, (list, tuple)):
-            return frozenset(v)
-        if isinstance(v, str):
-            raw_ids = [token.strip() for token in v.split(",") if token.strip()]
-            if not raw_ids:
-                return _EMPTY_CHAT_IDS
-            try:
-                return frozenset(int(id_str) for id_str in raw_ids)
-            except ValueError as e:
-                msg = (
-                    f"TELEGRAM_ALLOWED_CHAT_IDS contains non-integer value: {e}. "
-                    "Expected comma-separated integers (e.g. '12345678,87654321')."
-                )
-                raise ValueError(msg) from e
-        msg = f"Unexpected type for TELEGRAM_ALLOWED_CHAT_IDS: {type(v)}"
-        raise TypeError(msg)
 
     def is_chat_authorized(self, chat_id: int) -> bool:
         """Check whether a Telegram chat ID is authorized to use the bot.

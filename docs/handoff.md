@@ -47,10 +47,9 @@ All 6 MVP build steps from `docs/architecture.md` are implemented and verified. 
 Implements #61. Telegram access control via chat_id allowlist — fail-closed gate handler.
 
 **Config (`agent/config.py`):**
-- `TELEGRAM_ALLOWED_CHAT_IDS` env var — comma-separated chat IDs parsed into `frozenset[int]` via `@field_validator(mode="before")`
+- `TELEGRAM_ALLOWED_CHAT_IDS` env var — JSON array format (e.g. `[12345678,87654321]`), natively parsed by pydantic-settings into `frozenset[int]` — no custom validator needed
 - `is_chat_authorized(chat_id: int) -> bool` convenience method on `VoxnixSettings`
 - Fail-closed: empty or unset allowlist denies ALL users — bot locked by default
-- Full input validation: non-integer tokens raise `ValueError` at startup, trailing commas and whitespace handled gracefully
 
 **Gate handler (`agent/chat/handlers.py`):**
 - `check_access()` — registered as `TypeHandler(Update, ...)` in handler group -1 (runs before all group 0 handlers)
@@ -71,7 +70,7 @@ Implements #61. Telegram access control via chat_id allowlist — fail-closed ga
 **Tests:** 22 new tests across 4 classes:
 - `TestCheckAccess` (7): authorized pass-through, unauthorized block, empty allowlist denial, no-effective-chat block, silent drop, logging, negative group IDs
 - `TestIsChatAuthorized` (4): authorized/unauthorized/empty/negative IDs
-- `TestParseAllowedChatIds` (9): comma-separated, spaces, single ID, empty, None, non-integer error, negative IDs, trailing comma, frozenset passthrough
+- `TestParseAllowedChatIds` (6): JSON array string, single-element array, empty array, None/unset, negative group IDs, frozenset passthrough
 - `TestBuildApplicationAccessControl` (2): gate in group -1, group ordering
 - Updated 3 existing `TestBuildApplication` tests to mock `get_settings()`
 - **410 passed**, 0 failures, ruff clean
@@ -228,7 +227,7 @@ Implements #48, #62, #47, #54, #81. Agent goes from stateless command executor �
 ## Architecture decisions made this session
 
 ### Access control: fail-closed gate handler in group -1 (#61)
-The standard Telegram bot pattern is a chat_id allowlist. We use a `TypeHandler` in PTB handler group -1 as a single gate — it runs before all group 0 handlers (/start, /help, agent dispatch). `ApplicationHandlerStop` blocks all downstream processing for unauthorized users. The allowlist is a `frozenset[int]` parsed from a comma-separated env var (`TELEGRAM_ALLOWED_CHAT_IDS`), injected via agenix. Fail-closed: empty/unset denies everyone. Belt-and-suspenders: `filters.Chat` also applied to the catch-all agent dispatch handler.
+The standard Telegram bot pattern is a chat_id allowlist. We use a `TypeHandler` in PTB handler group -1 as a single gate — it runs before all group 0 handlers (/start, /help, agent dispatch). `ApplicationHandlerStop` blocks all downstream processing for unauthorized users. The allowlist is a `frozenset[int]` parsed from a JSON array env var (`TELEGRAM_ALLOWED_CHAT_IDS=[12345678,87654321]`), natively decoded by pydantic-settings — no custom validator needed. Injected via agenix. Fail-closed: empty/unset denies everyone. Belt-and-suspenders: `filters.Chat` also applied to the catch-all agent dispatch handler.
 
 ### Silent drop over denial message for unauthorized users
 The gate handler does NOT reply to unauthorized users. Sending a denial message (e.g. "Access denied") confirms the bot exists to strangers — an information leak. Silent drop is the safer choice for a personal/homelab bot. The admin sees denied attempts in the WARNING logs.

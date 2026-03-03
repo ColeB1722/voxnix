@@ -964,107 +964,84 @@ class TestIsChatAuthorized:
 
 
 class TestParseAllowedChatIds:
-    """Unit tests for the TELEGRAM_ALLOWED_CHAT_IDS field_validator."""
+    """Unit tests for TELEGRAM_ALLOWED_CHAT_IDS native JSON parsing.
 
-    def test_comma_separated_string(self):
-        from agent.config import VoxnixSettings
+    pydantic-settings natively decodes JSON env var strings into complex
+    types.  The env var format is a JSON array:
+        TELEGRAM_ALLOWED_CHAT_IDS=[12345678,87654321]
 
-        settings = VoxnixSettings(
-            voxnix_flake_path="/tmp/test",
-            llm_provider="ollama",
-            llm_model="test",
-            telegram_bot_token=SecretStr("fake:token"),
-            telegram_allowed_chat_ids="111,222,333",  # type: ignore[arg-type]  # pydantic field_validator coerces str → frozenset
-        )
+    No custom field_validator is needed — pydantic handles coercion to
+    frozenset[int] automatically.
+
+    IMPORTANT: JSON decoding only applies to the *environment source*, not to
+    constructor kwargs (InitSettingsSource passes values through as-is).
+    Tests that exercise the JSON string → frozenset path must therefore set
+    actual env vars via monkeypatch.setenv and instantiate via the env source.
+    """
+
+    # ── Required env vars (non-chat-id) for a valid VoxnixSettings ──────
+
+    _BASE_ENV = {
+        "VOXNIX_FLAKE_PATH": "/tmp/test",
+        "LLM_PROVIDER": "ollama",
+        "LLM_MODEL": "test",
+        "TELEGRAM_BOT_TOKEN": "fake:token",
+    }
+
+    def _make_settings(self, monkeypatch, chat_ids_value=None):
+        """Set base env vars, optionally set chat IDs, return settings."""
+        from agent.config import VoxnixSettings, clear_settings_cache
+
+        for k, v in self._BASE_ENV.items():
+            monkeypatch.setenv(k, v)
+        if chat_ids_value is not None:
+            monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", chat_ids_value)
+        else:
+            monkeypatch.delenv("TELEGRAM_ALLOWED_CHAT_IDS", raising=False)
+        clear_settings_cache()
+        return VoxnixSettings()
+
+    def test_json_array_string(self, monkeypatch):
+        """JSON array string from env var is parsed into frozenset."""
+        settings = self._make_settings(monkeypatch, "[111,222,333]")
         assert settings.telegram_allowed_chat_ids == frozenset({111, 222, 333})
 
-    def test_comma_separated_with_spaces(self):
-        from agent.config import VoxnixSettings
-
-        settings = VoxnixSettings(
-            voxnix_flake_path="/tmp/test",
-            llm_provider="ollama",
-            llm_model="test",
-            telegram_bot_token=SecretStr("fake:token"),
-            telegram_allowed_chat_ids=" 111 , 222 , 333 ",  # type: ignore[arg-type]
-        )
-        assert settings.telegram_allowed_chat_ids == frozenset({111, 222, 333})
-
-    def test_single_id(self):
-        from agent.config import VoxnixSettings
-
-        settings = VoxnixSettings(
-            voxnix_flake_path="/tmp/test",
-            llm_provider="ollama",
-            llm_model="test",
-            telegram_bot_token=SecretStr("fake:token"),
-            telegram_allowed_chat_ids="12345678",  # type: ignore[arg-type]
-        )
+    def test_single_id_json_array(self, monkeypatch):
+        """Single-element JSON array is parsed correctly."""
+        settings = self._make_settings(monkeypatch, "[12345678]")
         assert settings.telegram_allowed_chat_ids == frozenset({12345678})
 
-    def test_empty_string_gives_empty_set(self):
-        from agent.config import VoxnixSettings
-
-        settings = VoxnixSettings(
-            voxnix_flake_path="/tmp/test",
-            llm_provider="ollama",
-            llm_model="test",
-            telegram_bot_token=SecretStr("fake:token"),
-            telegram_allowed_chat_ids="",  # type: ignore[arg-type]
-        )
-        assert settings.telegram_allowed_chat_ids == frozenset()
-
-    def test_none_gives_empty_set(self):
-        from agent.config import VoxnixSettings
-
-        settings = VoxnixSettings(
-            voxnix_flake_path="/tmp/test",
-            llm_provider="ollama",
-            llm_model="test",
-            telegram_bot_token=SecretStr("fake:token"),
-            telegram_allowed_chat_ids=None,  # type: ignore[arg-type]
-        )
-        assert settings.telegram_allowed_chat_ids == frozenset()
-
-    def test_non_integer_raises_value_error(self):
-        import pytest
-
-        from agent.config import VoxnixSettings
-
-        with pytest.raises(Exception, match="non-integer"):
-            VoxnixSettings(
-                voxnix_flake_path="/tmp/test",
-                llm_provider="ollama",
-                llm_model="test",
-                telegram_bot_token=SecretStr("fake:token"),
-                telegram_allowed_chat_ids="111,abc,333",  # type: ignore[arg-type]
-            )
-
-    def test_negative_ids_for_groups(self):
-        from agent.config import VoxnixSettings
-
-        settings = VoxnixSettings(
-            voxnix_flake_path="/tmp/test",
-            llm_provider="ollama",
-            llm_model="test",
-            telegram_bot_token=SecretStr("fake:token"),
-            telegram_allowed_chat_ids="-100123456,111",  # type: ignore[arg-type]
-        )
+    def test_negative_ids_for_groups(self, monkeypatch):
+        """Negative chat IDs (Telegram group chats) are parsed correctly."""
+        settings = self._make_settings(monkeypatch, "[-100123456,111]")
         assert settings.telegram_allowed_chat_ids == frozenset({-100123456, 111})
 
-    def test_trailing_comma_ignored(self):
-        from agent.config import VoxnixSettings
+    def test_empty_json_array_gives_empty_set(self, monkeypatch):
+        """Empty JSON array results in empty frozenset (fail-closed)."""
+        settings = self._make_settings(monkeypatch, "[]")
+        assert settings.telegram_allowed_chat_ids == frozenset()
 
-        settings = VoxnixSettings(
-            voxnix_flake_path="/tmp/test",
-            llm_provider="ollama",
-            llm_model="test",
-            telegram_bot_token=SecretStr("fake:token"),
-            telegram_allowed_chat_ids="111,222,",  # type: ignore[arg-type]
-        )
-        assert settings.telegram_allowed_chat_ids == frozenset({111, 222})
+    def test_unset_gives_empty_set(self, monkeypatch):
+        """Unset env var falls back to default empty frozenset (fail-closed)."""
+        settings = self._make_settings(monkeypatch)  # no chat_ids_value → delenv
+        assert settings.telegram_allowed_chat_ids == frozenset()
+
+    def test_non_integer_raises_validation_error(self, monkeypatch):
+        """Non-integer values in the JSON array raise a validation error."""
+        import pytest
+        from pydantic import ValidationError
+
+        from agent.config import VoxnixSettings, clear_settings_cache
+
+        for k, v in self._BASE_ENV.items():
+            monkeypatch.setenv(k, v)
+        monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", '[111,"abc",333]')
+        clear_settings_cache()
+        with pytest.raises(ValidationError):
+            VoxnixSettings()
 
     def test_frozenset_passthrough(self):
+        """Already-parsed frozenset from code passes through unchanged."""
         from agent.config import VoxnixSettings
 
         settings = VoxnixSettings(
@@ -1073,6 +1050,19 @@ class TestParseAllowedChatIds:
             llm_model="test",
             telegram_bot_token=SecretStr("fake:token"),
             telegram_allowed_chat_ids=frozenset({111, 222}),
+        )
+        assert settings.telegram_allowed_chat_ids == frozenset({111, 222})
+
+    def test_list_passthrough(self):
+        """List of ints from code is coerced to frozenset."""
+        from agent.config import VoxnixSettings
+
+        settings = VoxnixSettings(
+            voxnix_flake_path="/tmp/test",
+            llm_provider="ollama",
+            llm_model="test",
+            telegram_bot_token=SecretStr("fake:token"),
+            telegram_allowed_chat_ids=[111, 222],  # type: ignore[arg-type]
         )
         assert settings.telegram_allowed_chat_ids == frozenset({111, 222})
 
