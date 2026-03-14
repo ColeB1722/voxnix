@@ -999,7 +999,7 @@ class TestParseAllowedChatIds:
         else:
             monkeypatch.delenv("TELEGRAM_ALLOWED_CHAT_IDS", raising=False)
         clear_settings_cache()
-        return VoxnixSettings()
+        return VoxnixSettings()  # type: ignore[call-arg]  # pydantic-settings sources required fields from env
 
     def test_json_array_string(self, monkeypatch):
         """JSON array string from env var is parsed into frozenset."""
@@ -1038,7 +1038,7 @@ class TestParseAllowedChatIds:
         monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", '[111,"abc",333]')
         clear_settings_cache()
         with pytest.raises(ValidationError):
-            VoxnixSettings()
+            VoxnixSettings()  # type: ignore[call-arg]  # intentionally invalid — testing validation
 
     def test_frozenset_passthrough(self):
         """Already-parsed frozenset from code passes through unchanged."""
