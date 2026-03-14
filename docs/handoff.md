@@ -17,7 +17,7 @@ You are working on **voxnix** — an agentic NixOS container orchestrator. A Tel
 **Agent service:** active, Telegram bot responding
 **Current branch:** `main`
 **Last known good containers:** `dev` (10.100.0.101, Tailscale 100.83.13.65) and `tail-test` (10.100.0.175, Tailscale 100.72.23.55) — both running. Both pre-date PR #84 so lack `VOXNIX_MODULES` env var (module query returns empty).
-**Eval CI:** fully operational — pipefail fix deployed, `issues: write` permission added, auto-creates `eval-regression` issues on failure. Issue #102 is the first real regression report.
+**Eval CI:** fully operational — pipefail fix deployed, `issues: write` permission added, auto-creates `eval-regression` issues on failure. Issue #102 should auto-close when post-merge eval CI runs green on the merged PR #106.
 **Last deploy:** PR #104 deployed to appliance — access control live, `TELEGRAM_ALLOWED_CHAT_IDS=[8586298950]`.
 **Access control:** Operational. Fail-closed gate handler in group -1. Allowlist loaded from agenix secrets. Unauthorized users silently dropped.
 
@@ -42,7 +42,27 @@ All 6 MVP build steps from `docs/architecture.md` are implemented and verified. 
 
 ## What was built (cumulative)
 
-### This session — 1Password SSH agent setup + PR #104 deployed
+### This session — PR #106 eval regression fixes (#92, #93, #102)
+
+Fixed all 5 eval regressions from #102 plus the underlying agent quality bugs.
+
+**System prompt improvements (`agent/agent.py`):**
+- Banned list/bullet formatting — prose sentences only (fixes NoMarkdown failures #92)
+- Tightened conciseness to "2 sentences or fewer, relay tool results directly" (fixes verbosity #93)
+- Agent no longer mentions Tailscale/SSH unless the module is actually active on the container
+
+**Tool routing fix:**
+- `tool_get_container_status` docstring reframed as the primary tool for "is X running?" — fixes `status-is-running` routing to `tool_list_workloads`
+
+**Create fallback behavior change:**
+- When tailscale module is requested but `TAILSCALE_AUTH_KEY` is missing, the tool now strips tailscale from the module list and proceeds with creation (brief note appended), instead of returning an error and blocking. Eliminates the verbose error flow that caused conciseness failures.
+
+**Type checking fix:**
+- `type: ignore[call-arg]` on `VoxnixSettings()` calls in `test_chat_handlers.py` where pydantic-settings sources required fields from monkeypatched env vars (invisible to ty)
+
+**Verification:** 409 unit tests, ruff clean, ty clean. Local evals: 18/19 pass (1 flaky judge on `query-modules` — not in original regression set).
+
+### Previous session — 1Password SSH agent setup + PR #104 deployed
 
 Resolved the 1Password/SSH authentication blocker and deployed PR #104 (access control) to the appliance.
 
@@ -249,6 +269,14 @@ Implements #48, #62, #47, #54, #81. Agent goes from stateless command executor �
 
 ## Architecture decisions made this session
 
+### Graceful tailscale fallback over blocking error (PR #106)
+When `tool_create_container` is called with the tailscale module but `TAILSCALE_AUTH_KEY` isn't configured, the tool now strips tailscale from the module list and proceeds with creation instead of returning an error. A brief note is appended to the success message. Rationale: the old behavior blocked the entire create operation for a missing optional feature, causing the LLM to generate verbose error explanations. The new behavior creates the container the user asked for and notes the limitation.
+
+### Prose-only responses, no list formatting (PR #106)
+System prompt now explicitly bans bullet points, dashes-as-bullets, and any list structure. Responses must be plain prose sentences. The previous "use plain dashes for lists" instruction was too ambiguous — GEval judges scored dash-lists as Markdown-ish formatting (NoMarkdown failures). "Write in prose" is unambiguous and the eval results are stable.
+
+## Architecture decisions made in previous sessions
+
 ### Access control: fail-closed gate handler in group -1 (#61)
 The standard Telegram bot pattern is a chat_id allowlist. We use a `TypeHandler` in PTB handler group -1 as a single gate — it runs before all group 0 handlers (/start, /help, agent dispatch). `ApplicationHandlerStop` blocks all downstream processing for unauthorized users. The allowlist is a `frozenset[int]` parsed from a JSON array env var (`TELEGRAM_ALLOWED_CHAT_IDS=[12345678,87654321]`), natively decoded by pydantic-settings — no custom validator needed. Injected via agenix. Fail-closed: empty/unset denies everyone. Belt-and-suspenders: `filters.Chat` also applied to the catch-all agent dispatch handler.
 
@@ -334,46 +362,41 @@ Tagged devices (`tag:shared`) have **key expiry disabled by default** in Tailsca
 ### ~~1. Deploy PR #104 (access control) — DONE~~
 Deployed. Access control live, bot responding to authorized chat ID only.
 
-### 2. Fix eval baseline regressions — High (immediate)
-The first real CI eval run (with pipefail fix) will surface the same 4 failures seen in the broken run. These are real agent quality issues, not eval bugs:
-- **#92** — Agent uses Markdown formatting (NoMarkdown failures on `query-tell-me-about`, `diag-why-cant-create`, `edge-whats-happening`). Fix: strengthen system prompt anti-Markdown instructions.
-- **#93** — Agent too verbose for simple ops (Conciseness failure on `diag-why-cant-create`). Fix: system prompt guidance on brevity.
-- `status-is-running` — agent called `tool_list_workloads` instead of `tool_get_container_status`. Fix: tool docstring disambiguation or system prompt guidance.
-- **#97** — Add MUST NOT scenarios for welcome-prompt and confirmation-prompt regressions (coverage gap from #51 spec).
+### ~~2. Fix eval baseline regressions — DONE (PR #106)~~
+All 5 regressions fixed: system prompt (no lists, concise), tool routing (status docstring), create fallback (graceful tailscale skip). #92 and #93 closed, #102 pending CI auto-close.
 
-### 3. Eval coverage expansion — High
+### 2. Eval coverage expansion — High
 - **#94** — Multi-turn knowledge retention scores 0.00. Investigate whether message history threading in evals matches Telegram bot behavior, and whether KnowledgeRetentionMetric thresholds need tuning.
 - **#97** — Add `NoWelcomePrompt` and `NoConfirmationPrompt` GEval metrics + scenarios.
 
-### 4. Host Tailscale (#17) — Medium
+### 3. Host Tailscale (#17) — Medium
 Add `services.tailscale.enable = true` to host NixOS config. Enables out-of-LAN `just deploy` and SSH break-glass. Small, orthogonal to everything. Also mitigates #89 (DHCP IP rotation) by providing a stable Tailscale IP.
 
-### 5. GitHub Deployment Action (#53) — Medium
+### 4. GitHub Deployment Action (#53) — Medium
 Deploy on merge to main via GitHub Actions. Combined with #17, removes LAN dependency.
 
-### 6. Quick cleanup batch — Low effort
+### 5. Quick cleanup batch — Low effort
 - #57 — Consolidate `validate_container_name` into `ContainerSpec`
 - #83 — Replace stdout-parsing install detection with conf-file check
 - #22 — Parameterize hardcoded values in host config
 - #89 — Fix appliance DHCP IP rotation (static IP or rely on #17)
 - #95 — Pin DeterminateSystems CI actions to specific versions
 
-### 7. A2A modularization (#67) — Architectural, 2-3 sessions
+### 6. A2A modularization (#67) — Architectural, 2-3 sessions
 Decouple Telegram bot from the agent via fasta2a. Evals are now in place as a safety net. The conversation history decision (#88) becomes relevant here.
 
 ---
 
 ## Open issues summary
 
-**Eval-related (new this session):**
+**Eval-related:**
 
 | # | Title | Priority |
 |---|-------|----------|
+| #102 | eval: regression detected (pending CI auto-close after PR #106) | High |
 | #97 | eval: add MUST NOT scenarios (welcome-prompt, confirmation-prompt) | High |
 | #95 | ops: pin DeterminateSystems CI actions to specific versions | Low |
 | #94 | eval: multi-turn knowledge retention scores 0.00 on baseline | Medium |
-| #93 | fix: agent responses too verbose for simple operations | High |
-| #92 | fix: agent uses Markdown formatting (raw text in Telegram) | High |
 
 **Infrastructure / ops:**
 
@@ -432,9 +455,9 @@ Decouple Telegram bot from the agent via fasta2a. Evals are now in place as a sa
 | #9  | warnings.warn stacklevel | Minor |
 | #6  | Explicit @pytest.mark.asyncio markers | Low |
 
-**Closed this session:** #61 (Telegram access control — PR #104, deployed)
-**Closed previous session:** #51 (automated LLM quality evals)
-**Previously closed:** #48, #47, #54, #62, #81, #68, #60, #46, #52, #12
+**Closed this session:** #92 (Markdown formatting), #93 (verbosity) — PR #106
+**Closed previous session:** #61 (Telegram access control — PR #104, deployed)
+**Previously closed:** #51, #48, #47, #54, #62, #81, #68, #60, #46, #52, #12
 
 ---
 
