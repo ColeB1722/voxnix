@@ -13,13 +13,13 @@ You are working on **voxnix** — an agentic NixOS container orchestrator. A Tel
 
 ## System state
 
-**Appliance:** `192.168.8.157` (Hyper-V Gen 2 VM, 16GB RAM) — ⚠️ IP rotates via DHCP, see #89
+**Appliance:** `192.168.8.168` (Hyper-V Gen 2 VM, 16GB RAM) — ⚠️ IP rotates via DHCP, see #89. Set DHCP reservation on router to stabilize.
 **Agent service:** active, Telegram bot responding
-**Current branch:** `feat/telegram-access-control` — PR #104 open, pending review
+**Current branch:** `main`
 **Last known good containers:** `dev` (10.100.0.101, Tailscale 100.83.13.65) and `tail-test` (10.100.0.175, Tailscale 100.72.23.55) — both running. Both pre-date PR #84 so lack `VOXNIX_MODULES` env var (module query returns empty).
 **Eval CI:** fully operational — pipefail fix deployed, `issues: write` permission added, auto-creates `eval-regression` issues on failure. Issue #102 is the first real regression report.
-**Last deploy:** PR #103 deployed to appliance — fixes `NameError: ModelMessage` that broke all agent responses.
-**Access control:** PR #104 implements #61 — bot is locked by default until `TELEGRAM_ALLOWED_CHAT_IDS` is added to agenix secrets. **Not yet deployed** — merge PR #104 and add the env var to unlock.
+**Last deploy:** PR #104 deployed to appliance — access control live, `TELEGRAM_ALLOWED_CHAT_IDS=[8586298950]`.
+**Access control:** Operational. Fail-closed gate handler in group -1. Allowlist loaded from agenix secrets. Unauthorized users silently dropped.
 
 ---
 
@@ -42,7 +42,30 @@ All 6 MVP build steps from `docs/architecture.md` are implemented and verified. 
 
 ## What was built (cumulative)
 
-### This session — PR #104 (feat/telegram-access-control, open)
+### This session — 1Password SSH agent setup + PR #104 deployed
+
+Resolved the 1Password/SSH authentication blocker and deployed PR #104 (access control) to the appliance.
+
+**1Password SSH agent bridge (dev environment, `~/dotfiles/home.nix`):**
+- `npiperelay` (Windows, installed via `winget install albertony.npiperelay`) bridges the Windows 1Password SSH agent named pipe to a Unix socket in WSL
+- `socat` (Nix, via Home Manager) listens on `~/.1password/agent.sock` and relays to `npiperelay.exe`
+- Bridge starts automatically in fish `shellInit` — idempotent (checks if socket is already active via `ss`)
+- `SSH_AUTH_SOCK` set in `home.sessionVariables` so all tools (ssh, git, nix-copy-closure, nixos-rebuild) authenticate transparently
+- No shell aliases needed for non-interactive use — Linux `ssh` talks to the agent natively via the socket
+
+**Approaches tried and rejected:**
+- `ssh.exe` aliases — works interactively but `nix-copy-closure` calls `/usr/bin/ssh` directly, bypassing aliases
+- `~/.local/bin/ssh` wrapper script → `ssh.exe` — PATH ordering issues with direnv/Nix devshells
+- `ProxyCommand ssh.exe -W %h:%p` in SSH config — SSH-inside-SSH corrupts the data channel
+- `SSH_AUTH_SOCK` without bridging — Linux processes can't read Windows named pipes
+
+**Deployment fixes:**
+- `justfile` pre-flight check changed from SSH connectivity test to `ping` — `BatchMode=yes` incompatible with 1Password auth prompts
+- Fixed typo in agenix secrets: `OPENROUTER_API_KEYS` → `OPENROUTER_API_KEY` (trailing S caused startup failure)
+
+**Result:** `just deploy 192.168.8.168` works end-to-end. Agent service active, access control operational.
+
+### Previous session — PR #104 (feat/telegram-access-control, merged)
 
 Implements #61. Telegram access control via chat_id allowlist — fail-closed gate handler.
 
@@ -308,8 +331,8 @@ Tagged devices (`tag:shared`) have **key expiry disabled by default** in Tailsca
 
 ## What to work on next (priority order)
 
-### 1. Deploy PR #104 (access control) — High (immediate)
-Merge PR #104, add `TELEGRAM_ALLOWED_CHAT_IDS=<admin_chat_id>` to agenix secrets, deploy. The bot is currently locked (denies everyone) until the env var is set.
+### ~~1. Deploy PR #104 (access control) — DONE~~
+Deployed. Access control live, bot responding to authorized chat ID only.
 
 ### 2. Fix eval baseline regressions — High (immediate)
 The first real CI eval run (with pipefail fix) will surface the same 4 failures seen in the broken run. These are real agent quality issues, not eval bugs:
@@ -357,7 +380,6 @@ Decouple Telegram bot from the agent via fasta2a. Evals are now in place as a sa
 | # | Title | Priority |
 |---|-------|----------|
 | #91 | Evaluate Python project structure for multi-agent scalability | Medium |
-| #61 | Telegram access control — allowlist authorized chat IDs | **PR #104 open** |
 | #89 | Appliance IP rotates via DHCP — static IP or Host Tailscale | Medium (ops) |
 | #88 | Decide where conversation history lives post-A2A | Architectural (deferred) |
 | #85 | Enforce PR approval via branch protection rules | Medium (ops) |
@@ -389,7 +411,6 @@ Decouple Telegram bot from the agent via fasta2a. Evals are now in place as a sa
 | #65 | Git worktree support | Low |
 | #64 | BYOM (bring your own modules) | Low |
 | #63 | iOS/Android native app | Low/idea |
-| #61 | Zero trust auth layer for Telegram | **PR #104 open** |
 | #55 | iOS/Android widget display | Low/idea |
 | #34 | Configurable observability backend | Low |
 | #32 | Custom installer ISO | Low/idea |
@@ -411,7 +432,7 @@ Decouple Telegram bot from the agent via fasta2a. Evals are now in place as a sa
 | #9  | warnings.warn stacklevel | Minor |
 | #6  | Explicit @pytest.mark.asyncio markers | Low |
 
-**Closed this session:** #61 (Telegram access control — PR #104)
+**Closed this session:** #61 (Telegram access control — PR #104, deployed)
 **Closed previous session:** #51 (automated LLM quality evals)
 **Previously closed:** #48, #47, #54, #62, #81, #68, #60, #46, #52, #12
 
@@ -421,30 +442,30 @@ Decouple Telegram bot from the agent via fasta2a. Evals are now in place as a sa
 
 ```bash
 # Agent logs (live, filter polling noise)
-ssh admin@192.168.8.157 "journalctl -u voxnix-agent -f | grep -v getUpdates"
+ssh admin@192.168.8.168 "journalctl -u voxnix-agent -f | grep -v getUpdates"
 
 # Container status
-ssh admin@192.168.8.157 "sudo machinectl list"
-ssh admin@192.168.8.157 "sudo extra-container list"
+ssh admin@192.168.8.168 "sudo machinectl list"
+ssh admin@192.168.8.168 "sudo extra-container list"
 
 # Tailscale status inside container
-ssh admin@192.168.8.157 "sudo nsenter -t \$(sudo machinectl show dev --property=Leader --value) -m -p -- systemctl status tailscaled"
+ssh admin@192.168.8.168 "sudo nsenter -t \$(sudo machinectl show dev --property=Leader --value) -m -p -- systemctl status tailscaled"
 
 # Tailscale autoconnect logs
-ssh admin@192.168.8.157 "sudo journalctl -M dev -u tailscale-autoconnect --no-pager -n 20"
+ssh admin@192.168.8.168 "sudo journalctl -M dev -u tailscale-autoconnect --no-pager -n 20"
 
 # Container network
-ssh admin@192.168.8.157 "LEADER=\$(sudo machinectl show dev --property=Leader --value) && sudo nsenter -t \$LEADER -n -- ip addr show eth0 && sudo nsenter -t \$LEADER -n -- ip route show"
+ssh admin@192.168.8.168 "LEADER=\$(sudo machinectl show dev --property=Leader --value) && sudo nsenter -t \$LEADER -n -- ip addr show eth0 && sudo nsenter -t \$LEADER -n -- ip route show"
 
 # ZFS dataset state
-ssh admin@192.168.8.157 "sudo zfs list -r tank/users"
+ssh admin@192.168.8.168 "sudo zfs list -r tank/users"
 
 # Full cleanup (container + ZFS)
-ssh admin@192.168.8.157 "sudo extra-container destroy dev && sudo zfs destroy -r tank/users/8586298950/containers/dev"
+ssh admin@192.168.8.168 "sudo extra-container destroy dev && sudo zfs destroy -r tank/users/8586298950/containers/dev"
 
 # Bridge and NAT health
-ssh admin@192.168.8.157 "ip addr show br-vox && systemctl is-active dnsmasq"
-ssh admin@192.168.8.157 "sudo iptables -t nat -L nixos-nat-pre -n -v | grep br-vox"
+ssh admin@192.168.8.168 "ip addr show br-vox && systemctl is-active dnsmasq"
+ssh admin@192.168.8.168 "sudo iptables -t nat -L nixos-nat-pre -n -v | grep br-vox"
 ```
 
 ---

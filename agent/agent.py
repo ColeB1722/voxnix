@@ -165,14 +165,20 @@ Your owner's ID is: {ctx.deps.owner}
 Available workload modules: {modules_str}
 
 Guidelines:
-- Be concise. Users get brief status updates, not walls of text.
-- Do not use Markdown formatting in responses. Respond in plain text only.
-  Telegram does not render Markdown — raw markers like **bold** and `backticks` appear as-is.
-  Use plain dashes for lists, plain text for emphasis, and spell out code references naturally.
+- Respond in plain prose sentences only. Never use lists, bullet points, or dashes as bullets.
+  Write "X is running at IP Y" not "- X: running". If you need to mention multiple things,
+  join them naturally in prose ("X and Y are both running").
+- Do not use Markdown formatting. Telegram renders raw text — **bold**, *italic*, `backticks`,
+  and # headers appear as literal characters. Plain text only.
+- For simple operations (create, start, stop, destroy, list, storage): respond in 2 sentences
+  or fewer. Relay the tool result directly — confirm what happened and include the essential
+  detail, then stop. Do not paraphrase, editorialize, or add information the user did not ask for.
+- For diagnostic questions: be thorough, but stay on-topic. Answer what was asked; do not append
+  explanations or troubleshooting steps for problems the user has not reported.
 - Containers are ephemeral by design — only ZFS-backed workspaces persist across restarts.
-- Containers with the tailscale module get a hostname on the tailnet matching the container name.
-  Users can SSH in via Tailscale SSH (e.g. ssh root@<container-name>). Always include the tailscale
-  module unless the user explicitly asks for a container without remote access.
+- Always include the tailscale module unless the user explicitly asks for a container without
+  remote access. When tailscale is active, users can SSH in via Tailscale SSH (ssh root@<name>).
+  Do not mention Tailscale or SSH access unless the container actually has the tailscale module.
 - Container names must be 11 characters or fewer (network interface name limit). Choose short names.
 - Destroy containers immediately when explicitly requested — do not ask for confirmation first.
   Trust that an explicit destroy request is intentional.
@@ -203,18 +209,18 @@ async def tool_create_container(
         A plain-language summary of the result for the user.
     """
     # If the tailscale module is requested, inject the auth key from settings.
-    # Refuse early if the key isn't configured — a container with the tailscale
-    # module but no auth key would start but never connect to the tailnet.
+    # If the key isn't configured, strip tailscale from the module list and
+    # proceed — a container with tailscale but no auth key would start but
+    # never connect to the tailnet, which is worse than skipping the module.
     tailscale_auth_key: str | None = None
+    tailscale_skipped = False
     if "tailscale" in modules:
         settings: VoxnixSettings = get_settings()
         if settings.tailscale_auth_key is None:
-            return (
-                "❌ The tailscale module requires a Tailscale auth key, "
-                "but TAILSCALE_AUTH_KEY is not configured on the appliance. "
-                "Ask the admin to add it via agenix."
-            )
-        tailscale_auth_key = settings.tailscale_auth_key.get_secret_value()
+            modules = [m for m in modules if m != "tailscale"]
+            tailscale_skipped = True
+        else:
+            tailscale_auth_key = settings.tailscale_auth_key.get_secret_value()
 
     spec = ContainerSpec(
         name=name,
@@ -225,6 +231,11 @@ async def tool_create_container(
     result: ContainerResult = await create_container(spec)
 
     if result.success:
+        if tailscale_skipped:
+            return (
+                f"✅ Container `{result.name}` is running. "
+                "Tailscale was skipped — TAILSCALE_AUTH_KEY is not configured on the appliance."
+            )
         return f"✅ Container `{result.name}` is running."
 
     return f"❌ Failed to create `{result.name}`: {result.error}"
@@ -444,10 +455,14 @@ async def tool_get_container_status(
     ctx: RunContext[VoxnixDeps],
     name: str,
 ) -> str:
-    """Get detailed systemd and machine status for a container.
+    """Check whether a specific container is running or stopped.
 
-    Shows whether the container is running, its resource usage, and
-    systemd unit state. Use this for deeper diagnostics than list_workloads.
+    Use this when the user asks about a single named container: "Is dev
+    running?", "What state is dev in?", "Is my dev container up?". Also
+    shows systemd unit state and resource usage for deeper diagnostics.
+
+    Prefer this over tool_list_workloads when the user names a specific
+    container and asks about its running state.
 
     Args:
         name: Name of the container to check.
