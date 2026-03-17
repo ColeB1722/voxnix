@@ -45,7 +45,7 @@ jobs:
       - uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Run agent checks
         run: |
-          nix develop --command bash -c "
+          nix shell nixpkgs#uv nixpkgs#ruff --command bash -c "
             uv sync --all-extras
 
             ruff check agent/
