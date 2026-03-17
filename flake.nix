@@ -30,7 +30,6 @@
 
       imports = [
         ./parts/formatting.nix
-        ./parts/devshell.nix
         ./parts/modules.nix
         ./parts/host.nix
         ./parts/agent.nix
