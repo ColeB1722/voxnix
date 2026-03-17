@@ -1,0 +1,15 @@
+# treefmt — unified formatter configuration
+# Used by: `just fmt`, `just check`, pre-commit hooks, and `nix fmt`
+# https://treefmt.com
+
+[global]
+excludes = ["flake.lock", ".devenv/*", ".direnv/*"]
+
+[formatter.nixfmt]
+command = "nixfmt"
+includes = ["*.nix"]
+
+[formatter.ruff]
+command = "ruff"
+options = ["format"]
+includes = ["*.py"]
